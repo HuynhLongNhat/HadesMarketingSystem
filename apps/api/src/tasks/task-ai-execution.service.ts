@@ -8,6 +8,7 @@ import {
   aiTaskResearchRuns,
   aiTaskResearchSources,
   aiTasks,
+  ceoPlans,
   db,
 } from "@workspace/db/node";
 import { decryptCredential } from "../ai-credentials/credential-crypto.js";
@@ -19,6 +20,7 @@ import { SearchProviderRuntimeService } from "../search-providers/search-provide
 import { SearchProviderRuntimeError } from "../search-providers/search-provider.adapter.js";
 import { canAttemptTaskExecution, canWorkerClaimTask, MAX_TASK_EXECUTIONS } from "./task-execution-state.js";
 import { validateCeoPlanReport } from "../ceo-planning/ceo-plan-validation.js";
+import { extractCeoStructuredPlan } from "../ceo-planning/ceo-structured-plan.js";
 
 const TIMEOUT_MS = 60_000;
 const MAX_OUTPUT_TOKENS = 2_000;
@@ -290,8 +292,10 @@ export class TaskAiExecutionService {
       reservationId = reservation.limited ? reservation.reservationId : null;
       const result = await this.request(runtime, prompt, maxOutputTokens);
       if (task.title.startsWith("Kế hoạch CEO:")) {
-        const reportError = validateCeoPlanReport(result.text);
-        if (reportError) throw new TaskProviderError(`CEO chưa tạo kế hoạch hoàn chỉnh: ${reportError}`, false);
+        const structured = extractCeoStructuredPlan(result.text);
+        if ("error" in structured) throw new TaskProviderError(`CEO chưa tạo kế hoạch có cấu trúc: ${structured.error}`, false);
+        const [stored] = await db.update(ceoPlans).set({ structuredPlan: structured.plan, structuredPlanVersion: structured.plan.version, updatedAt: new Date() }).where(and(eq(ceoPlans.taskId, task.id), eq(ceoPlans.organizationId, task.organizationId))).returning({ id: ceoPlans.id });
+        if (!stored) throw new TaskProviderError("Không tìm thấy kế hoạch CEO để lưu JSON có cấu trúc.", false);
       }
       const completed = await db.update(aiTasks).set({ status: "completed", result: result.text, error: null, executionToken: null, leaseExpiresAt: null, completedAt: new Date(), updatedAt: new Date() }).where(and(eq(aiTasks.id, task.id), eq(aiTasks.organizationId, task.organizationId), eq(aiTasks.executionToken, executionToken), ne(aiTasks.status, "cancelled"))).returning({ id: aiTasks.id });
       if (completed.length) {

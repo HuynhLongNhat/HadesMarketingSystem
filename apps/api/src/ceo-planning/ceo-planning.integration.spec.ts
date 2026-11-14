@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { after, before, test } from "node:test";
 import { and, eq } from "drizzle-orm";
-import { aiAgents, aiTasks, ceoPlans, db, organization, pool, user } from "@workspace/db/node";
+import { aiAgents, aiTasks, businessProfiles, ceoPlans, db, organization, pool, user } from "@workspace/db/node";
 import { CeoPlanningService } from "./ceo-planning.service.js";
+import { CeoPlanningContextBuilder } from "./ceo-planning-context.builder.js";
 
 const organizationId = randomUUID();
 const userId = randomUUID();
@@ -40,7 +41,8 @@ test("CEO retry is atomic, bounded, and retains the failed plan", async () => {
   const taskId = await seedTask();
   const agentId = await seedAgent();
   const planId = randomUUID();
-  await db.insert(ceoPlans).values({ id: planId, organizationId, createdBy: userId, ceoAgentId: agentId, taskId, title: "fixture", objective: "objective" });
+  const snapshot = { profile: { businessName: "Snapshot công ty", marketingBudgetVnd: 0 }, missingFields: ["Thị trường"] };
+  await db.insert(ceoPlans).values({ id: planId, organizationId, createdBy: userId, ceoAgentId: agentId, taskId, title: "fixture", objective: "objective", additionalContext: "Chỉ dùng website", businessProfileSnapshot: snapshot, businessProfileSnapshotAt: new Date(), contextVersion: "business-profile-v1" });
   const tasks = { create: async () => ({ id: await seedTask("queued") }), enqueue: async () => undefined, discardUnqueued: async () => undefined };
   const contexts = { formatForPrompt: () => "fixture" };
   const service = new CeoPlanningService(tasks as never, contexts as never);
@@ -52,6 +54,21 @@ test("CEO retry is atomic, bounded, and retains the failed plan", async () => {
   const [retry] = await db.select().from(ceoPlans).where(eq(ceoPlans.id, original!.retryPlanId!));
   assert.equal(retry?.retryOfPlanId, planId);
   assert.equal(retry?.retryCount, 1);
+  assert.deepEqual(retry?.businessProfileSnapshot, snapshot);
+  assert.equal(retry?.additionalContext, "Chỉ dùng website");
+});
+
+test("Business Profile context is organization-scoped and stays immutable after profile updates", async () => {
+  await db.insert(businessProfiles).values({ organizationId, businessName: "Hồ sơ A", marketingBudgetVnd: 0, budgetPeriodDays: 30, availableTools: [], availableChannels: [] });
+  await db.insert(businessProfiles).values({ organizationId: otherOrganizationId, businessName: "Hồ sơ B", marketingBudgetVnd: 999, budgetPeriodDays: 30, availableTools: [], availableChannels: [] });
+  const builder = new CeoPlanningContextBuilder();
+  const planningContext = await builder.build(context, "Tăng trưởng", "Không thay đổi hồ sơ");
+  assert.equal(planningContext.businessProfile.profile?.businessName, "Hồ sơ A");
+  assert.equal(planningContext.businessProfile.profile?.marketingBudgetVnd, 0);
+  await db.update(businessProfiles).set({ businessName: "Hồ sơ A mới", marketingBudgetVnd: 100 }).where(eq(businessProfiles.organizationId, organizationId));
+  assert.equal(planningContext.businessProfile.profile?.businessName, "Hồ sơ A");
+  assert.equal(planningContext.businessProfile.profile?.marketingBudgetVnd, 0);
+  assert.equal(planningContext.additionalContext, "Không thay đổi hồ sơ");
 });
 
 test("CEO delete is organization-scoped, soft, and rejects a running task", async () => {
