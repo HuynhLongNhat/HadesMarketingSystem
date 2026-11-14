@@ -41,8 +41,9 @@ test("CEO retry is atomic, bounded, and retains the failed plan", async () => {
   const agentId = await seedAgent();
   const planId = randomUUID();
   await db.insert(ceoPlans).values({ id: planId, organizationId, createdBy: userId, ceoAgentId: agentId, taskId, title: "fixture", objective: "objective" });
-  const tasks = { create: async () => ({ id: await seedTask("queued") }) };
-  const service = new CeoPlanningService(tasks as never);
+  const tasks = { create: async () => ({ id: await seedTask("queued") }), enqueue: async () => undefined, discardUnqueued: async () => undefined };
+  const contexts = { formatForPrompt: () => "fixture" };
+  const service = new CeoPlanningService(tasks as never, contexts as never);
   const [first, second] = await Promise.allSettled([service.retry(context, planId), service.retry(context, planId)]);
   assert.equal([first, second].filter((result) => result.status === "fulfilled").length, 1);
   const [original] = await db.select().from(ceoPlans).where(and(eq(ceoPlans.id, planId), eq(ceoPlans.organizationId, organizationId)));
@@ -58,7 +59,7 @@ test("CEO delete is organization-scoped, soft, and rejects a running task", asyn
   const agentId = await seedAgent();
   const planId = randomUUID();
   await db.insert(ceoPlans).values({ id: planId, organizationId, createdBy: userId, ceoAgentId: agentId, taskId, title: "delete fixture", objective: "objective" });
-  const service = new CeoPlanningService({} as never);
+  const service = new CeoPlanningService({} as never, {} as never);
   await assert.rejects(() => service.remove({ organizationId: otherOrganizationId, userId, role: "owner" } as never, planId), /Không tìm thấy/);
   await assert.rejects(() => service.remove(context, planId), /đang được CEO xử lý/);
   await db.update(aiTasks).set({ status: "failed", completedAt: new Date() }).where(eq(aiTasks.id, taskId));

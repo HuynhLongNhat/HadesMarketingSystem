@@ -274,6 +274,13 @@
       "when": 1795395600000,
       "tag": "0039_business_profile_core",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1795482000000,
+      "tag": "0040_ceo_plan_business_profile_snapshot",
+      "breakpoints": true
     }
   ]
 }

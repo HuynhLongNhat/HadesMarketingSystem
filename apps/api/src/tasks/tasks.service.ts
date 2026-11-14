@@ -17,7 +17,7 @@ export class TasksService {
     await db.insert(aiTaskEvents).values({ id: randomUUID(), taskId, organizationId, type, message });
   }
 
-  async create(ctx: RequestContext, dto: CreateTaskDto) {
+  async create(ctx: RequestContext, dto: CreateTaskDto, options: { enqueue?: boolean } = {}) {
     const title = dto.title.trim(), description = dto.description.trim();
     if (!title || !description) throw new BadRequestException("Task title and description are required");
     // New Agent tasks let the configured model decide at execution time whether
@@ -46,13 +46,23 @@ export class TasksService {
     const id = randomUUID();
     const [task] = await db.insert(aiTasks).values({ id, organizationId: ctx.organizationId, createdBy: ctx.userId, title, description, connectionId, modelId, ...agentSnapshot, webResearchEnabled, researchProvider: webResearchEnabled ? "tavily" : null, researchPolicyVersion: webResearchEnabled ? "v1" : null, leaseExpiresAt: this.queueLeaseExpiresAt() }).returning();
     await this.event(id, ctx.organizationId, "queued", webResearchEnabled ? `Task đang chờ Worker xử lý bởi Agent ${agentSnapshot.agentName}; Agent sẽ tự quyết định có cần Web Research.` : "Task đang chờ Worker xử lý.");
-    try { await this.jobs.enqueueAiTask({ taskId: id, organizationId: ctx.organizationId }); }
+    if (options.enqueue !== false) await this.enqueue(task);
+    return task;
+  }
+
+  /** Enqueue only after a caller has persisted its own record that references this task. */
+  async enqueue(task: Pick<typeof aiTasks.$inferSelect, "id" | "organizationId">) {
+    try { await this.jobs.enqueueAiTask({ taskId: task.id, organizationId: task.organizationId }); }
     catch (error) {
-      await db.update(aiTasks).set({ status: "failed", error: "Không thể đưa task vào hàng đợi xử lý.", completedAt: new Date(), updatedAt: new Date() }).where(eq(aiTasks.id, id));
-      await this.event(id, ctx.organizationId, "failed", "Không thể đưa task vào hàng đợi xử lý.");
+      await db.update(aiTasks).set({ status: "failed", error: "Không thể đưa task vào hàng đợi xử lý.", completedAt: new Date(), updatedAt: new Date() }).where(and(eq(aiTasks.id, task.id), eq(aiTasks.organizationId, task.organizationId)));
+      await this.event(task.id, task.organizationId, "failed", "Không thể đưa task vào hàng đợi xử lý.");
       throw error;
     }
-    return task;
+  }
+
+  /** A task that was deliberately created without enqueueing can be safely discarded. */
+  async discardUnqueued(task: Pick<typeof aiTasks.$inferSelect, "id" | "organizationId">) {
+    await db.delete(aiTasks).where(and(eq(aiTasks.id, task.id), eq(aiTasks.organizationId, task.organizationId), eq(aiTasks.status, "queued")));
   }
 
   /** Recover only expired leases; a live Worker renews its lease while generating. */

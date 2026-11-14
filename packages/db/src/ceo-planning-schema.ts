@@ -1,4 +1,4 @@
-import { foreignKey, index, integer, pgTable, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/pg-core";
+import { foreignKey, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/pg-core";
 import { organization, user } from "./schema.js";
 import { aiAgents } from "./agents-schema.js";
 import { aiTasks } from "./tasks-schema.js";
@@ -14,6 +14,12 @@ export const ceoPlans = pgTable("ceo_plans", {
   taskId: text("task_id").notNull().references(() => aiTasks.id, { onDelete: "restrict" }),
   title: varchar("title", { length: 200 }).notNull(),
   objective: text("objective").notNull(),
+  /** Per-plan reference data; it never modifies the organization's profile. */
+  additionalContext: text("additional_context"),
+  /** Immutable, sanitized data that was supplied to the CEO prompt. */
+  businessProfileSnapshot: jsonb("business_profile_snapshot").$type<Record<string, unknown> | null>(),
+  businessProfileSnapshotAt: timestamp("business_profile_snapshot_at", { withTimezone: true }),
+  contextVersion: varchar("context_version", { length: 32 }),
   approvalStatus: varchar("approval_status", { length: 16, enum: CEO_PLAN_APPROVAL_STATUSES }).notNull().default("pending"),
   decisionNote: text("decision_note"),
   decidedBy: text("decided_by").references(() => user.id, { onDelete: "restrict" }),
