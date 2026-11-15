@@ -34,6 +34,7 @@ import type {
 import { JobsService } from "./jobs.service.js";
 import { TaskAiExecutionService } from "../tasks/task-ai-execution.service.js";
 import { parseAiTaskJobData } from "./ai-task-job.js";
+import { DepartmentsService } from "../departments/departments.service.js";
 
 import {
   GoogleDriveIngestionService,
@@ -62,6 +63,7 @@ export class JobsProcessor extends WorkerHost {
     private readonly embeddings: KnowledgeEmbeddingService,
     private readonly jobs: JobsService,
     private readonly taskAiExecution: TaskAiExecutionService,
+    private readonly departments: DepartmentsService,
   ) {
     super();
   }
@@ -101,11 +103,18 @@ export class JobsProcessor extends WorkerHost {
       throw new UnrecoverableError("Invalid AI task job data");
     }
     const attempts = job.opts.attempts ?? 1;
-    await this.taskAiExecution.execute(
-      data,
-      job.attemptsMade + 1,
-      job.attemptsMade + 1 >= attempts,
-    );
+    try {
+      await this.taskAiExecution.execute(
+        data,
+        job.attemptsMade + 1,
+        job.attemptsMade + 1 >= attempts,
+      );
+    } finally {
+      // A final provider failure also has to close its Department run. During
+      // BullMQ retry the task remains queued, so advanceTask intentionally
+      // does nothing until a terminal status is persisted.
+      await this.departments.advanceTask(data.organizationId, data.taskId);
+    }
     return { success: true, taskId: data.taskId, organizationId: data.organizationId };
   }
 

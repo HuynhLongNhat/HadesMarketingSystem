@@ -13,6 +13,7 @@ import {
   JobsModule,
 } from "./jobs.module.js";
 import { TasksModule } from "../tasks/tasks.module.js";
+import { DepartmentsModule } from "../departments/departments.module.js";
 
 import {
   JobsProcessor,
@@ -28,6 +29,7 @@ import {
     ConversationsModule,
     KnowledgeConnectionsModule,
     TasksModule,
+    DepartmentsModule,
   ],
 
   providers: [

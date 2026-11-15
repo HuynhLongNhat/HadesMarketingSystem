@@ -10,6 +10,7 @@ import {
   Pencil,
   Trash2,
 } from "lucide-react";
+import Link from "next/link";
 
 import { Button } from "@workspace/ui/components/button";
 import { Input } from "@workspace/ui/components/input";
@@ -132,6 +133,7 @@ export function DepartmentCard({
           </p>
 
           <div className="flex shrink-0 items-center gap-2">
+            <Button type="button" size="sm" variant="outline" asChild><Link href={`/workforce/departments/${department.id}`}>Mở phòng</Link></Button>
             <Button
               type="button"
               variant="edit"

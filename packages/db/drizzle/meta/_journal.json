@@ -325,6 +325,7 @@
       "breakpoints": true
     },
     { "idx": 47, "version": "7", "when": 1794740000000, "tag": "0047_market_intelligence", "breakpoints": true },
-    { "idx": 48, "version": "7", "when": 1794741000000, "tag": "0048_department_workflows", "breakpoints": true }
+    { "idx": 48, "version": "7", "when": 1794741000000, "tag": "0048_department_workflows", "breakpoints": true },
+    { "idx": 49, "version": "7", "when": 1795827600000, "tag": "0049_repair_department_workflows", "breakpoints": true }
   ]
 }

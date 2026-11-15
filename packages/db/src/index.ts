@@ -124,6 +124,9 @@ export {
   aiAgents,
   AGENT_STATUSES,
   AGENT_CATEGORIES,
+  departmentTaskRuns,
+  departmentTaskSteps,
+  DEPARTMENT_TASK_RUN_STATUSES,
 } from "./agents-schema.js";
 
 export type {
@@ -136,6 +139,8 @@ export type {
   NewAgentTemplate,
   AiAgent,
   NewAiAgent,
+  DepartmentTaskRun,
+  DepartmentTaskStep,
 } from "./agents-schema.js";
 
 export {

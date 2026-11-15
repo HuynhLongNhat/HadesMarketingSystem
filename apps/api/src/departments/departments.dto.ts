@@ -57,3 +57,8 @@ export class UpdateDepartmentDto {
   @IsUUID()
   leadAgentId?: string | null;
 }
+
+export class CreateDepartmentTaskRunDto {
+  @IsString() @IsNotEmpty() @MaxLength(200) title!: string;
+  @IsString() @IsNotEmpty() @MaxLength(12000) input!: string;
+}

@@ -2,6 +2,7 @@ import {
   boolean,
   foreignKey,
   index,
+  integer,
   jsonb,
   pgTable,
   text,
@@ -9,8 +10,9 @@ import {
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 
-import { organization } from "./schema.js";
+import { organization, user } from "./schema.js";
 import { aiProviderConnections } from "./ai-schema.js";
+import { aiTasks } from "./tasks-schema.js";
 
 export const AGENT_STATUSES = [
   "draft",
@@ -205,6 +207,14 @@ export const aiAgents = pgTable(
   ],
 );
 
+export const DEPARTMENT_TASK_RUN_STATUSES = ["queued", "running", "completed", "failed", "cancelled"] as const;
+export const departmentTaskRuns = pgTable("department_task_runs", {
+  id: text("id").primaryKey(), organizationId: text("organization_id").notNull(), departmentId: text("department_id").notNull(), createdBy: text("created_by").notNull(), title: text("title").notNull(), input: text("input").notNull(), status: text("status", { enum: DEPARTMENT_TASK_RUN_STATUSES }).notNull().default("queued"), createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(), updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(), completedAt: timestamp("completed_at", { withTimezone: true }),
+}, (t) => [foreignKey({ name:"department_task_runs_org_fk", columns:[t.organizationId], foreignColumns:[organization.id] }).onDelete("cascade"), foreignKey({ name:"department_task_runs_department_fk", columns:[t.departmentId], foreignColumns:[departments.id] }).onDelete("restrict"), foreignKey({ name:"department_task_runs_created_by_fk", columns:[t.createdBy], foreignColumns:[user.id] }).onDelete("restrict"), index("department_task_runs_org_department_updated_idx").on(t.organizationId,t.departmentId,t.updatedAt)]);
+export const departmentTaskSteps = pgTable("department_task_steps", {
+  id: text("id").primaryKey(), organizationId: text("organization_id").notNull(), runId: text("run_id").notNull(), sequence: integer("sequence").notNull(), taskId: text("task_id").notNull(), agentId: text("agent_id"), agentName: text("agent_name"), role: text("role").notNull(), status: text("status", { enum: DEPARTMENT_TASK_RUN_STATUSES }).notNull().default("queued"), input: text("input").notNull(), output: text("output"), error: text("error"), createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(), updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(), completedAt: timestamp("completed_at", { withTimezone: true }),
+}, (t) => [foreignKey({ name:"department_task_steps_run_fk",columns:[t.runId],foreignColumns:[departmentTaskRuns.id] }).onDelete("cascade"), foreignKey({ name:"department_task_steps_task_fk",columns:[t.taskId],foreignColumns:[aiTasks.id] }).onDelete("restrict"), uniqueIndex("department_task_steps_task_uq").on(t.taskId), uniqueIndex("department_task_steps_run_sequence_uq").on(t.runId,t.sequence), index("department_task_steps_org_run_idx").on(t.organizationId,t.runId)]);
+
 export type Department = typeof departments.$inferSelect;
 
 export type NewDepartment = typeof departments.$inferInsert;
@@ -216,3 +226,5 @@ export type NewAgentTemplate = typeof agentTemplates.$inferInsert;
 export type AiAgent = typeof aiAgents.$inferSelect;
 
 export type NewAiAgent = typeof aiAgents.$inferInsert;
+export type DepartmentTaskRun = typeof departmentTaskRuns.$inferSelect;
+export type DepartmentTaskStep = typeof departmentTaskSteps.$inferSelect;

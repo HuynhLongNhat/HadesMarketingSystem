@@ -21,6 +21,7 @@ import { PERMISSIONS } from "../common/permissions/permissions.js";
 import {
   CreateDepartmentDto,
   UpdateDepartmentDto,
+  CreateDepartmentTaskRunDto,
 } from "./departments.dto.js";
 import { DepartmentsService } from "./departments.service.js";
 
@@ -46,8 +47,11 @@ export class DepartmentsController {
     @CurrentContext() context: RequestContext,
     @Param("id") id: string,
   ) {
-    return this.departmentsService.getById(context, id);
+    return this.departmentsService.detail(context, id);
   }
+
+  @Post(":id/runs") @RequirePermissions(PERMISSIONS.DEPARTMENT_MANAGE)
+  createRun(@CurrentContext() context: RequestContext, @Param("id") id: string, @Body() dto: CreateDepartmentTaskRunDto) { return this.departmentsService.createRun(context, id, dto); }
 
   @Post()
   @RequirePermissions(PERMISSIONS.DEPARTMENT_MANAGE)

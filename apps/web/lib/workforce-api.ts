@@ -21,6 +21,7 @@ export interface Department {
   name: string;
   slug: string;
   description: string | null;
+  leadAgentId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -68,6 +69,7 @@ export interface UpdateDepartmentInput {
   name?: string;
   slug?: string;
   description?: string;
+  leadAgentId?: string | null;
 }
 
 export interface CreateAgentInput {
@@ -145,6 +147,8 @@ export const workforceApi = {
       { method: "DELETE" },
     );
   },
+  getDepartment(id: string) { return apiFetch<Department & { members: AiAgent[]; runs: Array<{id:string;title:string;status:string;updatedAt:string}> }>(`/departments/${encodeURIComponent(id)}`); },
+  createDepartmentRun(id: string, input: { title:string; input:string }) { return apiFetch(`/departments/${encodeURIComponent(id)}/runs`, { method:"POST", body:JSON.stringify(input) }); },
 
   listAgents() {
     return apiFetch<AiAgent[]>("/agents");
