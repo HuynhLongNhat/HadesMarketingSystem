@@ -17,12 +17,12 @@ export class TasksService {
     await db.insert(aiTaskEvents).values({ id: randomUUID(), taskId, organizationId, type, message });
   }
 
-  async create(ctx: RequestContext, dto: CreateTaskDto, options: { enqueue?: boolean } = {}) {
+  async create(ctx: RequestContext, dto: CreateTaskDto, options: { enqueue?: boolean; webResearchEnabled?: boolean } = {}) {
     const title = dto.title.trim(), description = dto.description.trim();
     if (!title || !description) throw new BadRequestException("Task title and description are required");
     // New Agent tasks let the configured model decide at execution time whether
     // current public evidence is needed. General-model tasks retain UC-00 behavior.
-    const webResearchEnabled = Boolean(dto.agentId);
+    const webResearchEnabled = options.webResearchEnabled ?? Boolean(dto.agentId);
     let connectionId: string, modelId: string;
     let agentSnapshot: Pick<typeof aiTasks.$inferInsert, "agentId" | "agentName" | "agentRole" | "agentSystemPrompt" | "agentConnectionId" | "agentModelId"> = {};
     if (dto.agentId) {

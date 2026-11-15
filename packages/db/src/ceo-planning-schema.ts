@@ -22,6 +22,7 @@ export const ceoPlans = pgTable("ceo_plans", {
   contextVersion: varchar("context_version", { length: 32 }),
   structuredPlan: jsonb("structured_plan").$type<Record<string, unknown> | null>(),
   structuredPlanVersion: varchar("structured_plan_version", { length: 32 }),
+  generationSettings: jsonb("generation_settings").$type<Record<string, unknown> | null>(),
   approvalStatus: varchar("approval_status", { length: 16, enum: CEO_PLAN_APPROVAL_STATUSES }).notNull().default("pending"),
   decisionNote: text("decision_note"),
   decidedBy: text("decided_by").references(() => user.id, { onDelete: "restrict" }),

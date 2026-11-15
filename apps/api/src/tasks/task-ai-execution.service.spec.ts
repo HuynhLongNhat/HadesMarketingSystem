@@ -71,7 +71,9 @@ describe("AI task prompts", () => {
       return new Response(JSON.stringify({ choices: [{ message: { content: "Đã soạn" } }], usage: { total_tokens: 3 } }), { status: 200 });
     }) as typeof fetch;
     try {
-      const result = await (Reflect.get(service(), "request") as (runtime: { provider: string; protocol: "openai"; endpoint: string; apiKey: string; modelId: string }, value: string) => Promise<{ text: string }>)(
+      const instance = service();
+      const request = (Reflect.get(instance, "request") as (runtime: { provider: string; protocol: "openai"; endpoint: string; apiKey: string; modelId: string }, value: string) => Promise<{ text: string }>).bind(instance);
+      const result = await request(
         { provider: "openai", protocol: "openai", endpoint: "https://provider.invalid/chat/completions", apiKey: "test", modelId: "agent-model" }, prompt,
       );
       assert.equal(result.text, "Đã soạn");
@@ -80,6 +82,18 @@ describe("AI task prompts", () => {
     } finally {
       globalThis.fetch = previousFetch;
     }
+  });
+
+  it("uses the supplied CEO token and timeout settings without changing normal task defaults", async () => {
+    const previousFetch = globalThis.fetch;
+    let body: { max_completion_tokens?: number } | undefined;
+    globalThis.fetch = (async (_input, init) => { body = JSON.parse(String(init?.body)); return new Response(JSON.stringify({ choices: [{ message: { content: "Kế hoạch" } }] }), { status: 200 }); }) as typeof fetch;
+    try {
+      const instance = service();
+      const request = (Reflect.get(instance, "request") as (runtime: object, prompt: string, maxOutputTokens: number, timeoutMs: number) => Promise<unknown>).bind(instance);
+      await request({ provider: "openrouter", protocol: "openai", endpoint: "https://example.invalid", apiKey: "redacted", modelId: "free" }, "CEO", 6123, 177_000);
+      assert.equal(body?.max_completion_tokens, 6123);
+    } finally { globalThis.fetch = previousFetch; }
   });
 
   it("normalizes an aborted provider request into a safe timeout error", async () => {
@@ -97,5 +111,27 @@ describe("AI task prompts", () => {
     } finally {
       globalThis.fetch = previousFetch;
     }
+  });
+
+  it("classifies malformed JSON and empty OpenRouter content separately", async () => {
+    const previousFetch = globalThis.fetch;
+    const instance = service();
+    const request = (Reflect.get(instance, "request") as (runtime: object, prompt: string) => Promise<unknown>).bind(instance);
+    try {
+      globalThis.fetch = (async () => new Response("not-json", { status: 200, headers: { "content-type": "text/html" } })) as typeof fetch;
+      await assert.rejects(() => request({ provider: "openrouter", protocol: "openai", endpoint: "https://example.invalid", apiKey: "redacted", modelId: "free" }, "test"), /JSON không hợp lệ/);
+      globalThis.fetch = (async () => new Response(JSON.stringify({ choices: [{ message: {} }] }), { status: 200 })) as typeof fetch;
+      await assert.rejects(() => request({ provider: "openrouter", protocol: "openai", endpoint: "https://example.invalid", apiKey: "redacted", modelId: "free" }, "test"), /không có nội dung model/);
+    } finally { globalThis.fetch = previousFetch; }
+  });
+
+  it("turns HTTP 429 into a safe rate-limit message with the provider retry window", async () => {
+    const previousFetch = globalThis.fetch;
+    const instance = service();
+    const request = (Reflect.get(instance, "request") as (runtime: object, prompt: string) => Promise<unknown>).bind(instance);
+    globalThis.fetch = (async () => new Response("{}", { status: 429, headers: { "content-type": "application/json", "retry-after": "75" } })) as typeof fetch;
+    try {
+      await assert.rejects(() => request({ provider: "openrouter", protocol: "openai", endpoint: "https://example.invalid", apiKey: "redacted", modelId: "free" }, "test"), /giới hạn lượt gọi.*75 giây/);
+    } finally { globalThis.fetch = previousFetch; }
   });
 });

@@ -288,6 +288,13 @@
       "when": 1795568400000,
       "tag": "0041_ceo_structured_plan",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1795654800000,
+      "tag": "0042_ceo_plan_generation_settings",
+      "breakpoints": true
     }
   ]
 }

@@ -3,6 +3,7 @@ import { and, desc, eq, gte, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { createHash, randomUUID } from "node:crypto";
 import {
   aiProviderConnections,
+  aiAgents,
   aiTaskEvents,
   aiTaskReportCitations,
   aiTaskResearchRuns,
@@ -20,11 +21,13 @@ import { SearchProviderRuntimeService } from "../search-providers/search-provide
 import { SearchProviderRuntimeError } from "../search-providers/search-provider.adapter.js";
 import { canAttemptTaskExecution, canWorkerClaimTask, MAX_TASK_EXECUTIONS } from "./task-execution-state.js";
 import { validateCeoPlanReport } from "../ceo-planning/ceo-plan-validation.js";
-import { extractCeoStructuredPlan } from "../ceo-planning/ceo-structured-plan.js";
+import { extractCeoStructuredPlan, validateCeoPlanAgentReferences } from "../ceo-planning/ceo-structured-plan.js";
+import { resolveGenerationSettings } from "./generation-settings.js";
 
 const TIMEOUT_MS = 60_000;
+const CEO_PLAN_TIMEOUT_MS = 180_000;
 const MAX_OUTPUT_TOKENS = 2_000;
-const CEO_PLAN_MAX_OUTPUT_TOKENS = 4_000;
+const CEO_PLAN_MAX_OUTPUT_TOKENS = 8_000;
 const LEASE_MS = 90_000;
 const LEASE_HEARTBEAT_MS = 20_000;
 
@@ -37,7 +40,18 @@ export function isTruncatedFinishReason(value: unknown) {
 }
 
 export class TaskProviderError extends Error {
-  constructor(message: string, readonly retryable: boolean) { super(message); }
+  constructor(message: string, readonly retryable: boolean, readonly retryAfterSeconds: number | null = null) { super(message); }
+}
+
+const DEFAULT_RATE_LIMIT_RETRY_SECONDS = 60;
+function retryAfterSeconds(value: string | null, now = Date.now()): number | null {
+  if (!value) return null;
+  const seconds = Number(value);
+  if (Number.isInteger(seconds) && seconds > 0) return Math.min(seconds, 300);
+  const date = Date.parse(value);
+  if (Number.isNaN(date)) return null;
+  const remaining = Math.ceil((date - now) / 1_000);
+  return remaining > 0 ? Math.min(remaining, 300) : null;
 }
 
 class TaskCancelledError extends Error {}
@@ -178,35 +192,49 @@ export class TaskAiExecutionService {
     return { provider: connection.provider, protocol: "google", endpoint: `${endpoint}/models/${encodeURIComponent(task.modelId)}:generateContent`, apiKey, modelId: task.modelId };
   }
 
-  private async request(runtime: Runtime, prompt: string, maxOutputTokens = MAX_OUTPUT_TOKENS): Promise<{ text: string; usage: Usage }> {
+  private async request(runtime: Runtime, prompt: string, maxOutputTokens = MAX_OUTPUT_TOKENS, timeoutMs = TIMEOUT_MS): Promise<{ text: string; usage: Usage }> {
+    const started = Date.now();
     let response: Response;
     try {
       if (runtime.protocol === "anthropic") {
-        response = await fetch(runtime.endpoint, { method: "POST", headers: { "x-api-key": runtime.apiKey, "anthropic-version": "2023-06-01", "Content-Type": "application/json" }, body: JSON.stringify({ model: runtime.modelId, max_tokens: maxOutputTokens, temperature: 0.3, messages: [{ role: "user", content: prompt }] }), signal: AbortSignal.timeout(TIMEOUT_MS), redirect: "error" });
+        response = await fetch(runtime.endpoint, { method: "POST", headers: { "x-api-key": runtime.apiKey, "anthropic-version": "2023-06-01", "Content-Type": "application/json" }, body: JSON.stringify({ model: runtime.modelId, max_tokens: maxOutputTokens, temperature: 0.3, messages: [{ role: "user", content: prompt }] }), signal: AbortSignal.timeout(timeoutMs), redirect: "error" });
       } else if (runtime.protocol === "google") {
-        response = await fetch(runtime.endpoint, { method: "POST", headers: { "x-goog-api-key": runtime.apiKey, "Content-Type": "application/json" }, body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { temperature: 0.3, maxOutputTokens } }), signal: AbortSignal.timeout(TIMEOUT_MS), redirect: "error" });
+        response = await fetch(runtime.endpoint, { method: "POST", headers: { "x-goog-api-key": runtime.apiKey, "Content-Type": "application/json" }, body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { temperature: 0.3, maxOutputTokens } }), signal: AbortSignal.timeout(timeoutMs), redirect: "error" });
       } else {
-        response = await fetch(runtime.endpoint, { method: "POST", headers: { Authorization: `Bearer ${runtime.apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: runtime.modelId, temperature: 0.3, max_completion_tokens: maxOutputTokens, messages: [{ role: "system", content: "Trả lời chính xác theo yêu cầu, không bịa dữ liệu." }, { role: "user", content: prompt }] }), signal: AbortSignal.timeout(TIMEOUT_MS), redirect: "error" });
+        response = await fetch(runtime.endpoint, { method: "POST", headers: { Authorization: `Bearer ${runtime.apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: runtime.modelId, temperature: 0.3, max_completion_tokens: maxOutputTokens, messages: [{ role: "system", content: "Trả lời chính xác theo yêu cầu, không bịa dữ liệu." }, { role: "user", content: prompt }] }), signal: AbortSignal.timeout(timeoutMs), redirect: "error" });
       }
     } catch (error) {
       const name = error instanceof Error ? error.name : "";
       throw new TaskProviderError(name === "TimeoutError" || name === "AbortError" ? "AI Provider hết thời gian phản hồi." : "Không thể kết nối AI Provider.", true);
     }
     if (!response.ok) {
+      const retryAfter = response.status === 429 ? retryAfterSeconds(response.headers.get("retry-after")) : null;
+      this.logger.warn(JSON.stringify({ event: "ai_provider.response_error", provider: runtime.provider, category: "http_error", status: response.status, contentType: response.headers.get("content-type"), requestId: response.headers.get("x-request-id") ?? response.headers.get("x-openrouter-request-id") ?? null, retryAfterSeconds: retryAfter }));
       await response.body?.cancel();
+      if (response.status === 429) {
+        const waitSeconds = retryAfter ?? DEFAULT_RATE_LIMIT_RETRY_SECONDS;
+        throw new TaskProviderError(`AI Provider đang giới hạn lượt gọi. Hãy thử lại sau ít nhất ${waitSeconds} giây.`, true, waitSeconds);
+      }
       throw new TaskProviderError(`AI Provider trả về HTTP ${response.status}.`, isRetryableStatus(response.status));
     }
     let body: { choices?: Array<{ message?: { content?: string }; finish_reason?: unknown }>; content?: Array<{ text?: string }>; stop_reason?: unknown; usage?: { input_tokens?: unknown; output_tokens?: unknown; prompt_tokens?: unknown; completion_tokens?: unknown; total_tokens?: unknown }; usageMetadata?: { promptTokenCount?: unknown; candidatesTokenCount?: unknown; totalTokenCount?: unknown }; candidates?: Array<{ content?: { parts?: Array<{ text?: string }> }; finishReason?: unknown }> };
     try {
       body = await response.json() as typeof body;
-    } catch {
-      throw new TaskProviderError("AI Provider trả về phản hồi không hợp lệ.", true);
+    } catch (error) {
+      const name = error instanceof Error ? error.name : "unknown";
+      const category = name === "TimeoutError" || name === "AbortError" ? "response_timeout" : name === "SyntaxError" ? "json_parse_failure" : "body_read_failure";
+      this.logger.warn(JSON.stringify({ event: "ai_provider.response_error", provider: runtime.provider, category, status: response.status, contentType: response.headers.get("content-type"), requestId: response.headers.get("x-request-id") ?? response.headers.get("x-openrouter-request-id") ?? null, exception: name, durationMs: Date.now() - started }));
+      throw new TaskProviderError(category === "response_timeout" ? "AI Provider hết thời gian đọc phản hồi." : category === "json_parse_failure" ? "AI Provider trả về JSON không hợp lệ." : "Không thể đọc phản hồi từ AI Provider.", true);
     }
     const text = runtime.protocol === "anthropic" ? body.content?.map((part) => part.text ?? "").join("") : runtime.protocol === "google" ? body.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("") : body.choices?.[0]?.message?.content;
-    if (!text?.trim()) throw new TaskProviderError("AI Provider trả về nội dung trống.", false);
+    if (!text?.trim()) {
+      this.logger.warn(JSON.stringify({ event: "ai_provider.response_error", provider: runtime.provider, category: "empty_content", status: response.status, contentType: response.headers.get("content-type"), requestId: response.headers.get("x-request-id") ?? response.headers.get("x-openrouter-request-id") ?? null }));
+      throw new TaskProviderError("AI Provider trả về JSON hợp lệ nhưng không có nội dung model.", false);
+    }
     const finishReason = runtime.protocol === "anthropic" ? body.stop_reason : runtime.protocol === "google" ? body.candidates?.[0]?.finishReason : body.choices?.[0]?.finish_reason;
-    if (isTruncatedFinishReason(finishReason)) throw new TaskProviderError("AI Provider đã dừng output vì giới hạn token; kế hoạch/báo cáo chưa hoàn chỉnh. Hãy rút gọn yêu cầu hoặc dùng model có output limit lớn hơn.", false);
     const usage = runtime.protocol === "google" ? { input: body.usageMetadata?.promptTokenCount, output: body.usageMetadata?.candidatesTokenCount, total: body.usageMetadata?.totalTokenCount } : { input: body.usage?.input_tokens ?? body.usage?.prompt_tokens, output: body.usage?.output_tokens ?? body.usage?.completion_tokens, total: body.usage?.total_tokens };
+    this.logger.log(JSON.stringify({ event: "ai_provider.completion_metadata", provider: runtime.provider, modelId: runtime.modelId, finishReason: typeof finishReason === "string" ? finishReason : null, promptTokens: token(usage.input), completionTokens: token(usage.output), totalTokens: token(usage.total), requestedMaxCompletionTokens: maxOutputTokens }));
+    if (isTruncatedFinishReason(finishReason)) throw new TaskProviderError("AI Provider đã dừng output vì giới hạn token; kế hoạch/báo cáo chưa hoàn chỉnh. Hãy rút gọn yêu cầu hoặc dùng model có output limit lớn hơn.", false);
     return { text: text.trim(), usage };
   }
 
@@ -286,14 +314,31 @@ export class TaskAiExecutionService {
         if (decision.useResearch) evidence = await this.webResearch(task, executionToken, decision.query ?? undefined);
       }
       const prompt = this.prompt(task, evidence);
-      const maxOutputTokens = task.title.startsWith("Kế hoạch CEO:") ? CEO_PLAN_MAX_OUTPUT_TOKENS : MAX_OUTPUT_TOKENS;
+      const [planSettings] = task.title.startsWith("Kế hoạch CEO:") ? await db.select({ generationSettings: ceoPlans.generationSettings, businessProfileSnapshot: ceoPlans.businessProfileSnapshot }).from(ceoPlans).where(and(eq(ceoPlans.taskId, task.id), eq(ceoPlans.organizationId, task.organizationId))).limit(1) : [];
+      const effective = planSettings ? resolveGenerationSettings(planSettings.generationSettings) : null;
+      const maxOutputTokens = effective?.maxOutputTokens ?? (task.title.startsWith("Kế hoạch CEO:") ? CEO_PLAN_MAX_OUTPUT_TOKENS : MAX_OUTPUT_TOKENS);
       const reservation = await this.quota.reserve(task.organizationId, Math.max(1, Math.ceil(Buffer.byteLength(prompt, "utf8") / 2) + maxOutputTokens));
       if (reservation.limited && !reservation.allowed) throw new TaskProviderError("Đã vượt quota token AI của Organization.", false);
       reservationId = reservation.limited ? reservation.reservationId : null;
-      const result = await this.request(runtime, prompt, maxOutputTokens);
+      const result = await this.request(runtime, prompt, maxOutputTokens, (effective?.timeoutSeconds ?? (task.title.startsWith("Kế hoạch CEO:") ? CEO_PLAN_TIMEOUT_MS / 1000 : TIMEOUT_MS / 1000)) * 1000);
       if (task.title.startsWith("Kế hoạch CEO:")) {
         const structured = extractCeoStructuredPlan(result.text);
-        if ("error" in structured) throw new TaskProviderError(`CEO chưa tạo kế hoạch có cấu trúc: ${structured.error}`, false);
+        if ("error" in structured) {
+          this.logger.warn(JSON.stringify({ event: "ceo_structured_plan.validation_failed", taskId: task.id, organizationId: task.organizationId, issues: structured.issues }));
+          throw new TaskProviderError(`CEO chưa tạo kế hoạch có cấu trúc: ${structured.error}`, false);
+        }
+        const snapshotAgents = ((planSettings?.businessProfileSnapshot as { agents?: Array<{ id?: string; ref?: string; status?: string }> } | null)?.agents) ?? [];
+        const organizationAgents = await db.select({ id: aiAgents.id, status: aiAgents.status }).from(aiAgents).where(eq(aiAgents.organizationId, task.organizationId)).limit(100);
+        const currentStatus = new Map(organizationAgents.map((agent) => [agent.id, agent.status]));
+        const validatedAgents = [
+          ...snapshotAgents.map((agent) => ({ ...agent, status: agent.id ? currentStatus.get(agent.id) ?? "archived" : agent.status })),
+          ...organizationAgents.filter((agent) => !snapshotAgents.some((snapshot) => snapshot.id === agent.id)),
+        ];
+        const referenceError = validateCeoPlanAgentReferences(structured.plan, validatedAgents);
+        if (referenceError) {
+          this.logger.warn(JSON.stringify({ event: "ceo_structured_plan.agent_reference_failed", taskId: task.id, organizationId: task.organizationId, category: "agent_reference" }));
+          throw new TaskProviderError(`CEO chưa tạo kế hoạch có cấu trúc: ${referenceError}`, false);
+        }
         const [stored] = await db.update(ceoPlans).set({ structuredPlan: structured.plan, structuredPlanVersion: structured.plan.version, updatedAt: new Date() }).where(and(eq(ceoPlans.taskId, task.id), eq(ceoPlans.organizationId, task.organizationId))).returning({ id: ceoPlans.id });
         if (!stored) throw new TaskProviderError("Không tìm thấy kế hoạch CEO để lưu JSON có cấu trúc.", false);
       }

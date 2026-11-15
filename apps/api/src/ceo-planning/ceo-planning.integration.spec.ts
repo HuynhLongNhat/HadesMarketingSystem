@@ -42,8 +42,10 @@ test("CEO retry is atomic, bounded, and retains the failed plan", async () => {
   const agentId = await seedAgent();
   const planId = randomUUID();
   const snapshot = { profile: { businessName: "Snapshot công ty", marketingBudgetVnd: 0 }, missingFields: ["Thị trường"] };
-  await db.insert(ceoPlans).values({ id: planId, organizationId, createdBy: userId, ceoAgentId: agentId, taskId, title: "fixture", objective: "objective", additionalContext: "Chỉ dùng website", businessProfileSnapshot: snapshot, businessProfileSnapshotAt: new Date(), contextVersion: "business-profile-v1" });
-  const tasks = { create: async () => ({ id: await seedTask("queued") }), enqueue: async () => undefined, discardUnqueued: async () => undefined };
+  const generationSettings = { preset: "deep", maxOutputTokens: 7000, timeoutSeconds: 170, reasoningEffort: null, temperature: null };
+  await db.insert(ceoPlans).values({ id: planId, organizationId, createdBy: userId, ceoAgentId: agentId, taskId, title: "fixture", objective: "objective", additionalContext: "Chỉ dùng website", businessProfileSnapshot: snapshot, businessProfileSnapshotAt: new Date(), contextVersion: "business-profile-v1", generationSettings });
+  let createOptions: { enqueue?: boolean; webResearchEnabled?: boolean } | undefined;
+  const tasks = { create: async (_ctx: unknown, _dto: unknown, options: { enqueue?: boolean; webResearchEnabled?: boolean }) => { createOptions = options; return { id: await seedTask("queued") }; }, enqueue: async () => undefined, discardUnqueued: async () => undefined };
   const contexts = { formatForPrompt: () => "fixture" };
   const service = new CeoPlanningService(tasks as never, contexts as never);
   const [first, second] = await Promise.allSettled([service.retry(context, planId), service.retry(context, planId)]);
@@ -56,6 +58,8 @@ test("CEO retry is atomic, bounded, and retains the failed plan", async () => {
   assert.equal(retry?.retryCount, 1);
   assert.deepEqual(retry?.businessProfileSnapshot, snapshot);
   assert.equal(retry?.additionalContext, "Chỉ dùng website");
+  assert.deepEqual(retry?.generationSettings, generationSettings);
+  assert.deepEqual(createOptions, { enqueue: false, webResearchEnabled: false });
 });
 
 test("Business Profile context is organization-scoped and stays immutable after profile updates", async () => {

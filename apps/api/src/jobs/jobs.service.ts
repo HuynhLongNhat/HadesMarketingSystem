@@ -93,7 +93,9 @@ export class JobsService {
       organizationId: context.organizationId,
     };
   }
-  async enqueueAiTask(input:{taskId:string;organizationId:string; recovery?:boolean}) { const job=await this.queue.add(JOB_NAMES.AI_TASK_EXECUTE,{taskId:input.taskId,organizationId:input.organizationId,createdAt:new Date().toISOString()} satisfies AiTaskJobData,{jobId:input.recovery?`ai-task-recovery-${input.taskId}-${randomUUID()}`:`ai-task-${input.taskId}`,attempts:2,backoff:{type:"exponential",delay:3000},removeOnComplete:100,removeOnFail:100}); return {jobId:job.id}; }
+  // Free-provider 429 windows are typically longer than a few seconds. Keep
+  // the automatic retry conservative rather than immediately spending another attempt.
+  async enqueueAiTask(input:{taskId:string;organizationId:string; recovery?:boolean}) { const job=await this.queue.add(JOB_NAMES.AI_TASK_EXECUTE,{taskId:input.taskId,organizationId:input.organizationId,createdAt:new Date().toISOString()} satisfies AiTaskJobData,{jobId:input.recovery?`ai-task-recovery-${input.taskId}-${randomUUID()}`:`ai-task-${input.taskId}`,attempts:2,backoff:{type:"exponential",delay:120000},removeOnComplete:100,removeOnFail:100}); return {jobId:job.id}; }
 
   async enqueueCustomerSupportReply(input: {
     organizationId: string;
