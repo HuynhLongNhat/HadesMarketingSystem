@@ -53,6 +53,10 @@ export const departments = pgTable(
 
     description: text("description"),
 
+    // The service validates this Agent belongs to the same Organization and
+    // Department; the database FK is added by the compatible migration.
+    leadAgentId: text("lead_agent_id"),
+
     createdAt: timestamp("created_at", {
       withTimezone: true,
     })

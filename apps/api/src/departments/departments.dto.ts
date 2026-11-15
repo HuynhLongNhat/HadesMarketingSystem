@@ -5,6 +5,7 @@ import {
   IsString,
   Matches,
   MaxLength,
+  IsUUID,
 } from "class-validator";
 
 export class CreateDepartmentDto {
@@ -25,6 +26,10 @@ export class CreateDepartmentDto {
   @IsString()
   @MaxLength(1000)
   description?: string;
+
+  @IsOptional()
+  @IsUUID()
+  leadAgentId?: string | null;
 }
 
 export class UpdateDepartmentDto {
@@ -47,4 +52,8 @@ export class UpdateDepartmentDto {
   @IsString()
   @MaxLength(1000)
   description?: string;
+
+  @IsOptional()
+  @IsUUID()
+  leadAgentId?: string | null;
 }

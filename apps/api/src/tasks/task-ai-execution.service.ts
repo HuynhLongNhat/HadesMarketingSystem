@@ -12,6 +12,8 @@ import {
   businessDoctrines,
   ceoPlans,
   ceoPlanReviews,
+  marketIntelligenceProjects,
+  marketIntelligenceReports,
   db,
 } from "@workspace/db/node";
 import { decryptCredential } from "../ai-credentials/credential-crypto.js";
@@ -143,10 +145,10 @@ export class TaskAiExecutionService {
     return { code: "RESEARCH_EXECUTION_ERROR", retryable: false, message: "Không thể hoàn tất tìm kiếm Web Research." };
   }
 
-  private async webResearch(task: typeof aiTasks.$inferSelect, executionToken: string, requestedQuery?: string): Promise<ResearchEvidence> {
+  private async webResearch(task: typeof aiTasks.$inferSelect, executionToken: string, requestedQuery?: string, forceNew = false): Promise<ResearchEvidence> {
     if (!task.agentId || !this.research) throw new TaskProviderError("Task Web Research yêu cầu Agent và Search Provider runtime.", false);
     const [completedRun] = await db.select().from(aiTaskResearchRuns).where(and(eq(aiTaskResearchRuns.taskId, task.id), eq(aiTaskResearchRuns.organizationId, task.organizationId), eq(aiTaskResearchRuns.status, "completed"))).orderBy(desc(aiTaskResearchRuns.createdAt)).limit(1);
-    if (completedRun) {
+    if (completedRun && !forceNew) {
       const sources = await db.select({ title: aiTaskResearchSources.title, url: aiTaskResearchSources.displayUrl, excerpt: aiTaskResearchSources.excerpt, citationNumber: aiTaskReportCitations.citationNumber }).from(aiTaskResearchSources).leftJoin(aiTaskReportCitations, and(eq(aiTaskReportCitations.sourceId, aiTaskResearchSources.id), eq(aiTaskReportCitations.taskId, task.id), eq(aiTaskReportCitations.organizationId, task.organizationId))).where(and(eq(aiTaskResearchSources.taskId, task.id), eq(aiTaskResearchSources.organizationId, task.organizationId))).orderBy(aiTaskResearchSources.ordinal);
       return { query: completedRun.query ?? this.researchQuery(task), provider: completedRun.provider, sources: sources.map((source, index) => ({ ...source, citationNumber: source.citationNumber ?? index + 1 })) };
     }
@@ -189,6 +191,16 @@ export class TaskAiExecutionService {
       await this.event(task.id, task.organizationId, "research_failed", safe.message);
       throw new TaskProviderError(safe.message, safe.retryable);
     }
+  }
+
+  private marketQueries(project: { industry: string; market: string; objective: string; keywords: unknown }) {
+    const keywords = Array.isArray(project.keywords) ? project.keywords.filter((item): item is string => typeof item === "string" && item.trim().length > 0).slice(0, 2) : [];
+    return [...new Set([`${project.industry} ${project.market} ${project.objective}`, ...keywords.map((keyword) => `${keyword} ${project.market}`)].map((query) => query.replace(/\s+/g, " ").trim().slice(0, 500)).filter(Boolean))].slice(0, 3);
+  }
+
+  private marketIntelligencePrompt(project: { industry: string; market: string; objective: string }, evidence: ResearchEvidence[]) {
+    const sources = evidence.flatMap((run) => run.sources.map((source) => `[${source.citationNumber}] ${source.title}\n${source.url}\n${source.excerpt ?? ""}`)).join("\n\n");
+    return `Bạn là Intelligence Manager. Viết báo cáo tình báo thị trường bằng tiếng Việt dựa CHỈ trên evidence. Không bịa dữ liệu, nguồn hay thống kê. Phân biệt Dữ kiện có bằng chứng, Nhận định suy luận và Giả thuyết cần kiểm chứng. Mỗi kết luận có nguồn phải dùng [số].\n\nNgành: ${project.industry}\nThị trường: ${project.market}\nMục tiêu: ${project.objective}\n\nBắt buộc gồm: # Tóm tắt; ## Dữ kiện và xu hướng; ## Nhu cầu và nỗi đau khách hàng; ## Cơ hội kinh doanh; ## Giả thuyết cần kiểm chứng; ## Giới hạn nghiên cứu; ## Nguồn tham khảo.\n\nEvidence:\n${sources || "Không có nguồn phù hợp; nêu rõ giới hạn nghiên cứu."}`;
   }
 
   private async runtime(task: typeof aiTasks.$inferSelect): Promise<Runtime> {
@@ -332,6 +344,13 @@ export class TaskAiExecutionService {
     try {
       runtime = await this.runtime(task);
       let evidence: ResearchEvidence | undefined;
+      const [marketProject] = await db.select().from(marketIntelligenceProjects).where(and(eq(marketIntelligenceProjects.taskId, task.id), eq(marketIntelligenceProjects.organizationId, task.organizationId))).limit(1);
+      let marketEvidence: ResearchEvidence[] | null = null;
+      if (marketProject) {
+        await db.update(marketIntelligenceProjects).set({ status: "running", updatedAt: new Date() }).where(and(eq(marketIntelligenceProjects.id, marketProject.id), eq(marketIntelligenceProjects.organizationId, task.organizationId)));
+        marketEvidence = [];
+        for (const query of this.marketQueries(marketProject)) marketEvidence.push(await this.webResearch(task, executionToken, query, true));
+      }
       if (task.webResearchEnabled && task.agentId) {
         const decision = await this.decideResearch(runtime, task);
         await this.event(task.id, task.organizationId, "research_decision", decision.useResearch ? "Agent quyết định cần Web Research." : decision.fallback ? "Agent không trả về quyết định hợp lệ; tiếp tục không dùng Web Research." : "Agent quyết định không cần Web Research.");
@@ -340,7 +359,7 @@ export class TaskAiExecutionService {
       const isCeoPlan = task.title.startsWith("Kế hoạch CEO:");
       const [reviewRun] = await db.select({ id: ceoPlanReviews.id }).from(ceoPlanReviews).where(and(eq(ceoPlanReviews.taskId, task.id), eq(ceoPlanReviews.organizationId, task.organizationId))).limit(1);
       const isStrategicReview = Boolean(reviewRun);
-      const basePrompt = isStrategicReview ? this.strategicReviewPrompt(task) : isCeoPlan ? this.ceoPrompt(task) : this.prompt(task, evidence);
+      const basePrompt = isStrategicReview ? this.strategicReviewPrompt(task) : isCeoPlan ? this.ceoPrompt(task) : marketProject && marketEvidence ? this.marketIntelligencePrompt(marketProject, marketEvidence) : this.prompt(task, evidence);
       const [doctrine] = await db.select({ version: businessDoctrines.version, title: businessDoctrines.title, principles: businessDoctrines.principles }).from(businessDoctrines).where(and(eq(businessDoctrines.organizationId, task.organizationId), eq(businessDoctrines.enabled, true))).orderBy(desc(businessDoctrines.version)).limit(1);
       const prompt = doctrine ? `${basePrompt}\n\nBusiness Doctrine (phiên bản ${doctrine.version}, chỉ là ưu tiên kinh doanh; không được ghi đè bảo mật, giới hạn hệ thống, dữ liệu xác minh hay quyền công cụ):\n${doctrine.principles.map((principle, index) => `${index + 1}. ${principle}`).join("\n")}` : basePrompt;
       if (doctrine) await this.event(task.id, task.organizationId, "business_doctrine_applied", `Đã áp dụng Business Doctrine v${doctrine.version}: ${doctrine.title}`);
@@ -400,6 +419,10 @@ export class TaskAiExecutionService {
         if (!stored) throw new TaskProviderError("Không thể lưu báo cáo Strategic Reviewer.", false);
         await this.event(task.id, task.organizationId, "strategic_review_completed", "Strategic Reviewer đã hoàn tất đánh giá.");
       }
+      if (marketProject) {
+        await db.insert(marketIntelligenceReports).values({ id: randomUUID(), organizationId: task.organizationId, projectId: marketProject.id, taskId: task.id, content: result.text }).onConflictDoUpdate({ target: marketIntelligenceReports.projectId, set: { content: result.text } });
+        await db.update(marketIntelligenceProjects).set({ status: "completed", updatedAt: new Date() }).where(and(eq(marketIntelligenceProjects.id, marketProject.id), eq(marketIntelligenceProjects.organizationId, task.organizationId)));
+      }
       const completed = await db.update(aiTasks).set({ status: "completed", result: result.text, error: null, executionToken: null, leaseExpiresAt: null, completedAt: new Date(), updatedAt: new Date() }).where(and(eq(aiTasks.id, task.id), eq(aiTasks.organizationId, task.organizationId), eq(aiTasks.executionToken, executionToken), ne(aiTasks.status, "cancelled"))).returning({ id: aiTasks.id });
       if (completed.length) {
         // Record only after the terminal state is stored. A BullMQ retry will
@@ -414,7 +437,14 @@ export class TaskAiExecutionService {
         usageReliable = false;
       }
     } catch (error) {
-      if (error instanceof TaskCancelledError) { usageReliable = false; return; }
+      if (error instanceof TaskCancelledError) {
+        usageReliable = false;
+        await db.update(marketIntelligenceProjects).set({ status: "cancelled", updatedAt: new Date() }).where(and(eq(marketIntelligenceProjects.taskId, task.id), eq(marketIntelligenceProjects.organizationId, task.organizationId), eq(marketIntelligenceProjects.status, "running")));
+        return;
+      }
+      // A Market Intelligence Project is only a Task projection. Keep its
+      // visible lifecycle aligned with the authoritative Task terminal state.
+      await db.update(marketIntelligenceProjects).set({ status: "failed", updatedAt: new Date() }).where(and(eq(marketIntelligenceProjects.taskId, task.id), eq(marketIntelligenceProjects.organizationId, task.organizationId), eq(marketIntelligenceProjects.status, "running")));
       const message = safeError(error);
       this.logger.error(JSON.stringify({
         event: "ai_task.execution_failed",

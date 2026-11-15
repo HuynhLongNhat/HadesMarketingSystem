@@ -127,6 +127,7 @@ export class DepartmentsService {
       name?: string;
       slug?: string;
       description?: string | null;
+      leadAgentId?: string | null;
       updatedAt: Date;
     } = {
       updatedAt: new Date(),
@@ -148,6 +149,15 @@ export class DepartmentsService {
 
     if (dto.description !== undefined) {
       changes.description = dto.description.trim() || null;
+    }
+
+    if (dto.leadAgentId !== undefined) {
+      if (dto.leadAgentId === null) changes.leadAgentId = null;
+      else {
+        const [agent] = await db.select({ id: aiAgents.id }).from(aiAgents).where(and(eq(aiAgents.id, dto.leadAgentId), eq(aiAgents.organizationId, context.organizationId), eq(aiAgents.departmentId, id), eq(aiAgents.status, "active"))).limit(1);
+        if (!agent) throw new BadRequestException("Trưởng phòng phải là nhân viên đang hoạt động thuộc chính phòng ban này");
+        changes.leadAgentId = agent.id;
+      }
     }
 
     try {

@@ -23,6 +23,7 @@ import { TasksModule } from "./tasks/tasks.module.js";
 import { SearchProvidersModule } from "./search-providers/search-providers.module.js";
 import { CeoPlanningModule } from "./ceo-planning/ceo-planning.module.js";
 import { BusinessDoctrineModule } from "./business-doctrines/business-doctrine.module.js";
+import { MarketIntelligenceModule } from "./market-intelligence/market-intelligence.module.js";
 @Module({
   imports: [
     DatabaseModule,
@@ -54,6 +55,7 @@ import { BusinessDoctrineModule } from "./business-doctrines/business-doctrine.m
     SearchProvidersModule,
     CeoPlanningModule,
     BusinessDoctrineModule,
+    MarketIntelligenceModule,
   ],
   controllers: [HealthController],
 })

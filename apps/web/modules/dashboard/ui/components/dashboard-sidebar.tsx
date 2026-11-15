@@ -73,6 +73,7 @@ const navigation: NavigationGroup[] = [
       { id: "ceo-planning", label: { vi: "CEO AI Planning", en: "CEO AI Planning" }, icon: BrainCircuit, href: "/ceo-planning" },
       { id: "employees", label: { vi: "Nhân viên AI", en: "AI Employees" }, icon: Bot, href: "/workforce?tab=agents" },
       { id: "tasks", label: { vi: "Công việc", en: "Tasks" }, icon: ClipboardList, href: "/tasks" },
+      { id: "market-intelligence", label: { vi: "Tình báo thị trường", en: "Market Intelligence" }, icon: Target, href: "/market-intelligence" },
     ],
   },
   {
