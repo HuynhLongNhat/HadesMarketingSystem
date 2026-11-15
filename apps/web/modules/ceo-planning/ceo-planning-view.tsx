@@ -30,7 +30,7 @@ function allowed(plan:CeoPlan, task:AiTaskDetail|null) { return task?.status ===
 function parseStructuredResult(raw:string|undefined|null): CeoPlan["structuredPlan"] {
  if (!raw?.trim()) return null;
  try {
-  const cleaned=raw.trim().replace(/^\`\`\`(?:json)?\\s*/i,"").replace(/\\s*\`\`\`$/,"");
+  const cleaned=raw.trim().replace(/^\`\`\`(?:json)?\s*/i,"").replace(/\s*\`\`\`$/,"");
   const value:unknown=JSON.parse(cleaned);
   if (!value || typeof value!=="object" || Array.isArray(value)) return null;
   const record=value as Record<string,unknown>;
