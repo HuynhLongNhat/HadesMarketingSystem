@@ -106,6 +106,15 @@ export interface ConnectionTestResult {
   checkedAt: string;
 }
 
+export interface ModelAvailabilityResult {
+  connectionId: string;
+  provider: AiProviderType;
+  modelId: string;
+  available: boolean;
+  status: "available" | "model_unsupported" | "unsupported";
+  message: string;
+}
+
 const BASE_PATH = "/ai-providers";
 
 export const aiProvidersApi = {
@@ -190,9 +199,18 @@ export const aiProvidersApi = {
     );
   },
 
-  listCatalogModels(provider: AiProviderType) {
+  listCatalogModels(provider: AiProviderType, connectionId?: string) {
+    const params = new URLSearchParams({ provider });
+    if (connectionId) params.set("connectionId", connectionId);
     return apiFetch<CatalogModel[]>(
-      `${BASE_PATH}/catalog/models?provider=${encodeURIComponent(provider)}`,
+      `${BASE_PATH}/catalog/models?${params.toString()}`,
+    );
+  },
+
+  validateModel(id: string, modelId: string) {
+    return apiFetch<ModelAvailabilityResult>(
+      `${BASE_PATH}/${encodeURIComponent(id)}/models/validate`,
+      { method: "POST", body: JSON.stringify({ modelId }) },
     );
   },
 

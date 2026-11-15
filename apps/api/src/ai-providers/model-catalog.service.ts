@@ -2,9 +2,18 @@
 import {
   BadRequestException,
   BadGatewayException,
+  HttpException,
   Injectable,
+  NotFoundException,
   ServiceUnavailableException,
+  UnauthorizedException,
 } from "@nestjs/common";
+import { and, eq } from "drizzle-orm";
+
+import {
+  aiProviderConnections,
+  db,
+} from "@workspace/db/node";
 
 import {
   PROVIDER_REGISTRY,
@@ -13,6 +22,10 @@ import {
 } from "./provider-registry.js";
 
 import type { AiProviderType } from "@workspace/db/node";
+import type { AiProviderConnection } from "@workspace/db/node";
+
+import { decryptCredential } from "../ai-credentials/credential-crypto.js";
+import type { RequestContext } from "../auth/request-context.js";
 
 export interface CatalogModel {
   id: string;
@@ -24,6 +37,15 @@ export interface CatalogModel {
   supportsVision: boolean;
   supportsTools: boolean;
   dimensions?: number;
+}
+
+export interface ModelAvailabilityResult {
+  connectionId: string;
+  provider: AiProviderType;
+  modelId: string;
+  available: boolean;
+  status: "available" | "model_unsupported" | "unsupported";
+  message: string;
 }
 
 type JsonObject = Record<string, unknown>;
@@ -92,7 +114,11 @@ export class ModelCatalogService {
     }));
   }
 
-  async listModels(provider: string): Promise<CatalogModel[]> {
+  async listModels(
+    provider: string,
+    context?: RequestContext,
+    connectionId?: string,
+  ): Promise<CatalogModel[]> {
     if (
       !Object.prototype.hasOwnProperty.call(
         PROVIDER_REGISTRY,
@@ -107,6 +133,37 @@ export class ModelCatalogService {
 
     if (!definition.catalogProvider) {
       return [];
+    }
+
+    if (provider === "groq") {
+      if (!context || !connectionId) {
+        throw new BadRequestException({
+          code: "MODEL_CATALOG_CONNECTION_REQUIRED",
+          message: "Groq cần một kết nối đang bật để tải danh sách mô hình.",
+        });
+      }
+
+      const cacheKey = `groq:${context.organizationId}:${connectionId}`;
+      const cachedGroq = this.cache.get(cacheKey);
+      if (cachedGroq && cachedGroq.expiresAt > Date.now()) {
+        return cachedGroq.data;
+      }
+
+      const connection = await this.findConnection(
+        context,
+        connectionId,
+        "groq",
+      );
+      const models = await this.getGroqModels(
+        connection,
+        this.decryptConnectionCredential(context, connection),
+      );
+
+      this.cache.set(cacheKey, {
+        data: models,
+        expiresAt: Date.now() + 15 * 60 * 1000,
+      });
+      return models;
     }
 
     const cached = this.cache.get(provider);
@@ -129,6 +186,181 @@ export class ModelCatalogService {
     });
 
     return models;
+  }
+
+  async validateModel(
+    context: RequestContext,
+    connectionId: string,
+    rawModelId: string,
+  ): Promise<ModelAvailabilityResult> {
+    const modelId = rawModelId.trim();
+    const connection = await this.findConnection(context, connectionId);
+
+    if (connection.provider !== "groq") {
+      return {
+        connectionId: connection.id,
+        provider: connection.provider,
+        modelId,
+        available: false,
+        status: "unsupported",
+        message: "Chưa hỗ trợ kiểm tra mô hình trực tiếp cho nhà cung cấp này.",
+      };
+    }
+
+    const models = await this.listModels(
+      connection.provider,
+      context,
+      connection.id,
+    );
+    const available = models.some((model) => model.id === modelId);
+
+    return {
+      connectionId: connection.id,
+      provider: connection.provider,
+      modelId,
+      available,
+      status: available ? "available" : "model_unsupported",
+      message: available
+        ? "Mô hình khả dụng trên kết nối Groq này."
+        : "Groq không trả về Model ID này cho kết nối hiện tại.",
+    };
+  }
+
+  private async findConnection(
+    context: RequestContext,
+    connectionId: string,
+    provider?: AiProviderType,
+  ): Promise<AiProviderConnection> {
+    const conditions = [
+      eq(aiProviderConnections.organizationId, context.organizationId),
+      eq(aiProviderConnections.id, connectionId),
+      eq(aiProviderConnections.enabled, true),
+    ];
+
+    if (provider) {
+      conditions.push(eq(aiProviderConnections.provider, provider));
+    }
+
+    const [connection] = await db
+      .select()
+      .from(aiProviderConnections)
+      .where(and(...conditions))
+      .limit(1);
+
+    if (!connection) {
+      throw new NotFoundException("AI provider connection not found or disabled");
+    }
+
+    return connection;
+  }
+
+  private decryptConnectionCredential(
+    context: RequestContext,
+    connection: AiProviderConnection,
+  ): string {
+    try {
+      return decryptCredential(
+        {
+          encryptedApiKey: connection.encryptedApiKey,
+          keyIv: connection.keyIv,
+          keyAuthTag: connection.keyAuthTag,
+          keyVersion: "v1",
+        },
+        {
+          organizationId: context.organizationId,
+          connectionId: connection.id,
+          provider: connection.provider,
+        },
+      );
+    } catch {
+      throw new ServiceUnavailableException({
+        code: "MODEL_CATALOG_CREDENTIAL_UNAVAILABLE",
+        message: "Không thể sử dụng credential đã lưu của kết nối này.",
+      });
+    }
+  }
+
+  private async getGroqModels(
+    connection: AiProviderConnection,
+    apiKey: string,
+  ): Promise<CatalogModel[]> {
+    let response: Response;
+
+    try {
+      response = await fetch("https://api.groq.com/openai/v1/models", {
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        signal: AbortSignal.timeout(10_000),
+        redirect: "error",
+      });
+    } catch {
+      throw new ServiceUnavailableException({
+        code: "MODEL_CATALOG_UNAVAILABLE",
+        message: "Không thể kết nối tới Groq để tải danh sách mô hình.",
+      });
+    }
+
+    if (response.status === 401) {
+      await response.body?.cancel();
+      throw new UnauthorizedException({
+        code: "MODEL_CATALOG_INVALID_API_KEY",
+        message: "Groq từ chối API key của kết nối này.",
+      });
+    }
+
+    if (response.status === 429) {
+      await response.body?.cancel();
+      throw new HttpException({
+        code: "MODEL_CATALOG_RATE_LIMITED",
+        message: "Groq đang giới hạn yêu cầu tải danh sách mô hình (HTTP 429).",
+      }, 429);
+    }
+
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new BadGatewayException({
+        code: "MODEL_CATALOG_HTTP_ERROR",
+        message: `Groq không thể tải danh sách mô hình (HTTP ${response.status}).`,
+      });
+    }
+
+    let payload: JsonObject | null;
+    try {
+      payload = record(await response.json());
+    } catch {
+      throw new BadGatewayException({
+        code: "MODEL_CATALOG_INVALID_RESPONSE",
+        message: "Groq trả về danh sách mô hình không hợp lệ.",
+      });
+    }
+
+    const entries = payload?.data;
+    if (!Array.isArray(entries)) {
+      throw new BadGatewayException({
+        code: "MODEL_CATALOG_INVALID_RESPONSE",
+        message: "Groq trả về danh sách mô hình không hợp lệ.",
+      });
+    }
+
+    return entries.flatMap((raw): CatalogModel[] => {
+      const item = record(raw);
+      if (!item || typeof item.id !== "string" || !item.id.trim()) {
+        return [];
+      }
+
+      return [{
+        id: item.id,
+        name: item.id,
+        provider: connection.provider,
+        contextWindow: null,
+        inputPricePerMillion: null,
+        outputPricePerMillion: null,
+        supportsVision: false,
+        supportsTools: false,
+      }];
+    }).sort((a, b) => a.name.localeCompare(b.name));
   }
 
   private async getJson(url: string): Promise<unknown> {

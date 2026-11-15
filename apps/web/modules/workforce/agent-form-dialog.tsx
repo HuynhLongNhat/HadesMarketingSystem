@@ -404,6 +404,7 @@ export function AgentFormDialog({
 
               <ModelPicker
                 provider={selectedConnection?.provider}
+                connectionId={selectedConnection?.id}
                 value={form.modelId}
                 onChange={(v) =>
                   update("modelId", v)

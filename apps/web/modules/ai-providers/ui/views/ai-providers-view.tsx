@@ -265,6 +265,11 @@ function ModelDefaultCard({
                   ? selectedConnection.provider
                   : undefined
               }
+              connectionId={
+                selectedConnection?.enabled
+                  ? selectedConnection.id
+                  : undefined
+              }
               value={draft.modelId}
               onChange={(modelId) =>
                 onChange(purpose, { modelId })

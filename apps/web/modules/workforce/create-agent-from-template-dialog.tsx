@@ -328,6 +328,7 @@ export function CreateAgentFromTemplateDialog({
 
               <ModelPicker
                 provider={selectedConnection?.provider}
+                connectionId={selectedConnection?.id}
                 value={modelId}
                 onChange={setModelId}
                 disabled={saving}

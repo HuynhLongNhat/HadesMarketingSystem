@@ -2,9 +2,15 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Check, ChevronsUpDown, Loader2 } from "lucide-react";
+import {
+  Check,
+  ChevronsUpDown,
+  CircleAlert,
+  Loader2,
+} from "lucide-react";
 
 import { Button } from "@workspace/ui/components/button";
+import { Input } from "@workspace/ui/components/input";
 import {
   Popover,
   PopoverContent,
@@ -27,6 +33,8 @@ import { useUiLanguage } from "@/lib/ui-language";
 
 interface Props {
   provider?: AiProviderType;
+  /** Required by Groq so the backend can use this organization's credential. */
+  connectionId?: string;
   value: string;
   onChange: (value: string) => void;
   disabled?: boolean;
@@ -35,6 +43,7 @@ interface Props {
 
 export function ModelPicker({
   provider,
+  connectionId,
   value,
   onChange,
   disabled,
@@ -44,14 +53,16 @@ export function ModelPicker({
 
   const [models, setModels] = useState<CatalogModel[]>([]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [revision, setRevision] = useState(0);
+  const [checking, setChecking] = useState(false);
+  const [availability, setAvailability] = useState<string | null>(null);
 
   useEffect(() => {
     if (!provider) {
       setModels([]);
-      setError(false);
+      setError(null);
       setLoading(false);
       return;
     }
@@ -59,19 +70,26 @@ export function ModelPicker({
     let alive = true;
 
     setLoading(true);
-    setError(false);
+    setError(null);
     setModels([]);
+    setAvailability(null);
 
     const loadModels = embeddingOnly
       ? aiProvidersApi.listEmbeddingModels(provider)
-      : aiProvidersApi.listCatalogModels(provider);
+      : aiProvidersApi.listCatalogModels(provider, connectionId);
 
     void loadModels
       .then((items) => {
         if (alive) setModels(items);
       })
-      .catch(() => {
-        if (alive) setError(true);
+      .catch((loadError: unknown) => {
+        if (alive) {
+          setError(
+            loadError instanceof Error
+              ? loadError.message
+              : "Không thể tải danh sách mô hình.",
+          );
+        }
       })
       .finally(() => {
         if (alive) setLoading(false);
@@ -80,7 +98,7 @@ export function ModelPicker({
     return () => {
       alive = false;
     };
-  }, [embeddingOnly, provider, revision]);
+  }, [connectionId, embeddingOnly, provider, revision]);
 
   const selected = useMemo(
     () => models.find((item) => item.id === value),
@@ -92,7 +110,7 @@ export function ModelPicker({
     : loading
       ? t.loadingModels
       : error
-        ? t.modelError
+        ? "Không thể tải danh sách mô hình"
         : selected
           ? selected.name
           : value
@@ -114,7 +132,7 @@ export function ModelPicker({
               disabled ||
               !provider ||
               loading ||
-              error ||
+              Boolean(error) ||
               models.length === 0
             }
             className="w-full min-w-0 justify-between font-normal text-foreground"
@@ -196,15 +214,78 @@ export function ModelPicker({
         </p>
       )}
 
-      {error && (
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          onClick={() => setRevision((n) => n + 1)}
-        >
-          {t.retry}
-        </Button>
+      {!embeddingOnly && provider && !loading && (error || models.length === 0) && (
+        <div className="space-y-2 rounded-md border border-dashed p-3">
+          <p className="flex items-start gap-2 text-xs text-muted-foreground">
+            <CircleAlert className="mt-0.5 size-3.5 shrink-0" />
+            <span>
+              {error
+                ? `${error} Bạn vẫn có thể nhập Model ID thủ công.`
+                : "Catalog không có mô hình khả dụng. Bạn vẫn có thể nhập Model ID thủ công."}
+            </span>
+          </p>
+
+          <Input
+            value={value}
+            disabled={disabled}
+            maxLength={200}
+            placeholder="Ví dụ: llama-3.3-70b-versatile"
+            onChange={(event) => {
+              setAvailability(null);
+              onChange(event.target.value);
+            }}
+            aria-label="Model ID thủ công"
+          />
+
+          <div className="flex flex-wrap gap-2">
+            {error && (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={disabled || loading}
+                onClick={() => setRevision((n) => n + 1)}
+              >
+                {t.retry}
+              </Button>
+            )}
+
+          </div>
+        </div>
+      )}
+
+      {!embeddingOnly && provider === "groq" && connectionId && value.trim() && (
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={disabled || checking}
+            onClick={() => {
+              setChecking(true);
+              setAvailability(null);
+              void aiProvidersApi.validateModel(connectionId, value.trim())
+                .then((result) => setAvailability(result.message))
+                .catch((checkError: unknown) => {
+                  setAvailability(
+                    checkError instanceof Error
+                      ? checkError.message
+                      : "Không thể kiểm tra Model ID.",
+                  );
+                })
+                .finally(() => setChecking(false));
+            }}
+          >
+            {checking && <Loader2 className="mr-1 size-3.5 animate-spin" />}
+            Kiểm tra Model ID
+          </Button>
+
+          {availability && (
+            <p className="text-xs text-muted-foreground" role="status">
+              {availability}
+            </p>
+          )}
+        </div>
       )}
     </div>
   );

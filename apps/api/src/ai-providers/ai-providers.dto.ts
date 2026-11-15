@@ -89,3 +89,14 @@ export class UpsertAiModelDefaultDto {
   modelId!: string;
 }
 
+export class ValidateAiProviderModelDto {
+  @ApiProperty({
+    example: "llama-3.3-70b-versatile",
+    maxLength: 200,
+  })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(200)
+  modelId!: string;
+}
+

@@ -33,6 +33,7 @@ import {
   CreateAiProviderDto,
   UpdateAiProviderDto,
   UpsertAiModelDefaultDto,
+  ValidateAiProviderModelDto,
 } from "./ai-providers.dto.js";
 
 import { AiProvidersService } from "./ai-providers.service.js";
@@ -102,10 +103,18 @@ export class AiProvidersController {
     required: true,
     type: String,
   })
+  @ApiQuery({
+    name: "connectionId",
+    required: false,
+    type: String,
+    description: "Required when provider is Groq.",
+  })
   listCatalogModels(
+    @CurrentContext() ctx: RequestContext,
     @Query("provider") provider: string,
+    @Query("connectionId") connectionId?: string,
   ) {
-    return this.modelCatalog.listModels(provider);
+    return this.modelCatalog.listModels(provider, ctx, connectionId);
   }
 
   @Get("catalog/embedding-models")
@@ -190,6 +199,20 @@ export class AiProvidersController {
       ctx,
       id,
     );
+  }
+
+  @Post(":id/models/validate")
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSIONS.AI_PROVIDER_READ)
+  @ApiOperation({
+    summary: "Check whether a model is available for the stored connection",
+  })
+  validateModel(
+    @CurrentContext() ctx: RequestContext,
+    @Param("id") id: string,
+    @Body() dto: ValidateAiProviderModelDto,
+  ) {
+    return this.modelCatalog.validateModel(ctx, id, dto.modelId);
   }
 
   @Get(":id")
