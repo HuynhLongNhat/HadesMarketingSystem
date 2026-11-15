@@ -6,7 +6,7 @@ import { PermissionsGuard } from "../common/permissions/permissions.guard.js";
 import { RequirePermissions } from "../common/permissions/permissions.decorator.js";
 import { PERMISSIONS } from "../common/permissions/permissions.js";
 import { CeoPlanningService } from "./ceo-planning.service.js";
-import { CreateCeoPlanDto, DecideCeoPlanDto } from "./ceo-planning.dto.js";
+import { CreateCeoPlanDto, CreateStrategicReviewDto, DecideCeoPlanDto } from "./ceo-planning.dto.js";
 @Controller("ceo-plans") @UseGuards(AuthGuard, PermissionsGuard)
 export class CeoPlanningController {
   constructor(private readonly plans: CeoPlanningService) {}
@@ -15,5 +15,7 @@ export class CeoPlanningController {
   @Post() @RequirePermissions(PERMISSIONS.AGENT_MANAGE) create(@CurrentContext() ctx: RequestContext, @Body() dto: CreateCeoPlanDto) { return this.plans.create(ctx, dto); }
   @Post(":id/retry") @RequirePermissions(PERMISSIONS.AGENT_MANAGE) retry(@CurrentContext() ctx: RequestContext, @Param("id") id: string) { return this.plans.retry(ctx, id); }
   @Post(":id/decision") @RequirePermissions(PERMISSIONS.AGENT_MANAGE) decide(@CurrentContext() ctx: RequestContext, @Param("id") id: string, @Body() dto: DecideCeoPlanDto) { return this.plans.decide(ctx, id, dto); }
+  @Get(":id/reviews") @RequirePermissions(PERMISSIONS.AGENT_READ) reviews(@CurrentContext() ctx: RequestContext, @Param("id") id: string) { return this.plans.listReviews(ctx, id); }
+  @Post(":id/reviews") @RequirePermissions(PERMISSIONS.AGENT_MANAGE) review(@CurrentContext() ctx: RequestContext, @Param("id") id: string, @Body() dto: CreateStrategicReviewDto) { return this.plans.createReview(ctx, id, dto); }
   @Delete(":id") @RequirePermissions(PERMISSIONS.AGENT_MANAGE) remove(@CurrentContext() ctx: RequestContext, @Param("id") id: string) { return this.plans.remove(ctx, id); }
 }

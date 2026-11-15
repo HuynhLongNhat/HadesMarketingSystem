@@ -47,4 +47,26 @@ export const ceoPlans = pgTable("ceo_plans", {
   index("ceo_plans_org_deleted_idx").on(table.organizationId, table.deletedAt),
 ]);
 
+/** Immutable, independently generated review of one CEO plan version. */
+export const ceoPlanReviews = pgTable("ceo_plan_reviews", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id").notNull().references(() => organization.id, { onDelete: "cascade" }),
+  planId: text("plan_id").notNull().references(() => ceoPlans.id, { onDelete: "cascade" }),
+  taskId: text("task_id").notNull().references(() => aiTasks.id, { onDelete: "restrict" }),
+  createdBy: text("created_by").notNull().references(() => user.id, { onDelete: "restrict" }),
+  providerConnectionId: text("provider_connection_id").notNull(),
+  modelId: text("model_id").notNull(),
+  planVersion: varchar("plan_version", { length: 32 }),
+  report: jsonb("report").$type<Record<string, unknown> | null>(),
+  reportVersion: varchar("report_version", { length: 32 }),
+  reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("ceo_plan_reviews_task_unique").on(table.taskId),
+  index("ceo_plan_reviews_org_plan_created_idx").on(table.organizationId, table.planId, table.createdAt),
+  uniqueIndex("ceo_plan_reviews_id_org_unique").on(table.id, table.organizationId),
+]);
+
 export type CeoPlan = typeof ceoPlans.$inferSelect;
+export type CeoPlanReview = typeof ceoPlanReviews.$inferSelect;

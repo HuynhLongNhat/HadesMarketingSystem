@@ -1,13 +1,12 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { and, desc, eq, isNull } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
-import { aiTasks, ceoPlans, db } from "@workspace/db/node";
+import { aiProviderConnections, aiTasks, ceoPlanReviews, ceoPlans, db } from "@workspace/db/node";
 import type { RequestContext } from "../auth/request-context.js";
 import { TasksService } from "../tasks/tasks.service.js";
-import type { CreateCeoPlanDto, DecideCeoPlanDto } from "./ceo-planning.dto.js";
+import type { CreateCeoPlanDto, CreateStrategicReviewDto, DecideCeoPlanDto } from "./ceo-planning.dto.js";
 import { ceoPlanApprovalError } from "./ceo-plan-validation.js";
 import { CeoPlanningContextBuilder, CEO_PLANNING_CONTEXT_VERSION, type CeoPlanningContext } from "./ceo-planning-context.builder.js";
-import { ceoStructuredPlanSchema } from "./ceo-structured-plan.js";
 import { resolveGenerationSettings } from "../tasks/generation-settings.js";
 import { apiProviderExecutionSource, assertSupportedExecutionSource, storedExecutionSource, type CeoExecutionSourceSnapshot } from "./ceo-execution-source.js";
 
@@ -63,6 +62,28 @@ export class CeoPlanningService {
     if (!plan) throw new NotFoundException("Không tìm thấy kế hoạch CEO.");
     return plan;
   }
+  async listReviews(ctx: RequestContext, id: string) {
+    await this.get(ctx, id);
+    const rows = await db.select({ review: ceoPlanReviews, taskStatus: aiTasks.status, taskError: aiTasks.error }).from(ceoPlanReviews).leftJoin(aiTasks, and(eq(aiTasks.id, ceoPlanReviews.taskId), eq(aiTasks.organizationId, ceoPlanReviews.organizationId))).where(and(eq(ceoPlanReviews.organizationId, ctx.organizationId), eq(ceoPlanReviews.planId, id))).orderBy(desc(ceoPlanReviews.createdAt));
+    return rows.map(({ review, taskStatus, taskError }) => ({ ...review, taskStatus, taskError }));
+  }
+  private reviewerPrompt(plan: typeof ceoPlans.$inferSelect) {
+    return `Bạn là AI Strategic Reviewer độc lập. Đánh giá kế hoạch CEO bằng JSON duy nhất, không Markdown/code fence. Không tự phê duyệt hay thực thi. Chỉ phân biệt dữ liệu được xác minh trong Business Profile/kế hoạch với giả định và nhận định của bạn; không bịa số liệu thị trường/doanh thu. Chấm đúng tổng 100: feasibility/25, strategyQuality/20, resourceAllocation/15, riskManagement/15, kpis/15, logicConsistency/10. Mỗi tiêu chí có score, comment, strengths, weaknesses, improvements. Schema: {"version":"v1","totalScore":number,"classification":"APPROVE_RECOMMENDED|NEEDS_IMPROVEMENT|MAJOR_REVISION|REBUILD_RECOMMENDED","criteria":{"feasibility":{"score":number,"comment":"string","strengths":["string"],"weaknesses":["string"],"improvements":["string"]},"strategyQuality":{},"resourceAllocation":{},"riskManagement":{},"kpis":{},"logicConsistency":{}},"criticalIssues":["string"],"strengths":["string"],"weaknesses":["string"],"improvements":[{"priority":"high|medium|low","recommendation":"string"}],"conclusion":"string","recommendation":"string"}.\n\nBusiness Profile snapshot:\n${JSON.stringify(plan.businessProfileSnapshot ?? null)}\n\nCEO structured plan:\n${JSON.stringify(plan.structuredPlan ?? null)}\n\nCEO objective: ${plan.objective}`;
+  }
+  async createReview(ctx: RequestContext, id: string, dto: CreateStrategicReviewDto) {
+    const plan = await this.get(ctx, id);
+    const [sourceTask] = await db.select({ status: aiTasks.status, result: aiTasks.result }).from(aiTasks).where(and(eq(aiTasks.id, plan.taskId), eq(aiTasks.organizationId, ctx.organizationId))).limit(1);
+    const planError = ceoPlanApprovalError(sourceTask, plan.structuredPlan);
+    if (planError) throw new BadRequestException(`Chỉ đánh giá kế hoạch hợp lệ đã hoàn tất: ${planError}`);
+    const [connection] = await db.select({ id: aiProviderConnections.id, provider: aiProviderConnections.provider }).from(aiProviderConnections).where(and(eq(aiProviderConnections.id, dto.providerConnectionId), eq(aiProviderConnections.organizationId, ctx.organizationId), eq(aiProviderConnections.enabled, true))).limit(1);
+    if (!connection) throw new BadRequestException("Kết nối AI Reviewer không khả dụng.");
+    if (connection.provider !== "google") throw new BadRequestException("Strategic Reviewer MVP yêu cầu connection Gemini (Google AI Studio).");
+    const task = await this.tasks.create(ctx, { title: `Đánh giá chiến lược: ${plan.title}`, description: this.reviewerPrompt(plan) }, { enqueue: false, webResearchEnabled: false, runtime: { connectionId: connection.id, modelId: dto.modelId.trim() } });
+    const [review] = await db.insert(ceoPlanReviews).values({ id: randomUUID(), organizationId: ctx.organizationId, planId: plan.id, taskId: task.id, createdBy: ctx.userId, providerConnectionId: connection.id, modelId: dto.modelId.trim(), planVersion: plan.structuredPlanVersion }).returning();
+    if (!review) throw new Error("Không thể lưu yêu cầu đánh giá chiến lược.");
+    await this.tasks.enqueue(task);
+    return review;
+  }
   async retry(ctx: RequestContext, id: string) {
     const plan = await this.get(ctx, id);
     const [task] = await db.select({ status: aiTasks.status }).from(aiTasks).where(and(eq(aiTasks.id, plan.taskId), eq(aiTasks.organizationId, ctx.organizationId))).limit(1);
@@ -101,9 +122,8 @@ export class CeoPlanningService {
     if (plan.approvalStatus !== "pending") throw new BadRequestException("Kế hoạch này đã được quyết định.");
     if (dto.decision === "approved") {
       const [task] = await db.select({ status: aiTasks.status, result: aiTasks.result }).from(aiTasks).where(and(eq(aiTasks.id, plan.taskId), eq(aiTasks.organizationId, ctx.organizationId))).limit(1);
-      const reportError = ceoPlanApprovalError(task);
+      const reportError = ceoPlanApprovalError(task, plan.structuredPlan);
       if (reportError) throw new BadRequestException(`Không thể phê duyệt: ${reportError}`);
-      if (plan.structuredPlanVersion && !ceoStructuredPlanSchema.safeParse(plan.structuredPlan).success) throw new BadRequestException("Không thể phê duyệt: structured plan không hợp lệ.");
     }
     const [updated] = await db.update(ceoPlans).set({ approvalStatus: dto.decision, decisionNote: dto.note?.trim() || null, decidedBy: ctx.userId, decidedAt: new Date(), updatedAt: new Date() }).where(and(eq(ceoPlans.id, id), eq(ceoPlans.organizationId, ctx.organizationId), eq(ceoPlans.approvalStatus, "pending"))).returning();
     if (!updated) throw new BadRequestException("Không thể cập nhật quyết định kế hoạch.");

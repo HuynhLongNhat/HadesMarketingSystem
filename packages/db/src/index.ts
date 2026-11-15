@@ -191,8 +191,8 @@ export {
 export { aiTasks, aiTaskEvents, aiTaskResearchRuns, aiTaskResearchSources, aiTaskReportCitations, AI_TASK_STATUSES, AI_TASK_RESEARCH_RUN_STATUSES, AI_TASK_RESEARCH_SOURCE_STATUSES } from "./tasks-schema.js";
 export type { AiTask, NewAiTask, AiTaskResearchRun, NewAiTaskResearchRun, AiTaskResearchSource, NewAiTaskResearchSource, AiTaskReportCitation, NewAiTaskReportCitation } from "./tasks-schema.js";
 
-export { ceoPlans, CEO_PLAN_APPROVAL_STATUSES } from "./ceo-planning-schema.js";
-export type { CeoPlan, CeoPlanApprovalStatus } from "./ceo-planning-schema.js";
+export { ceoPlans, ceoPlanReviews, CEO_PLAN_APPROVAL_STATUSES } from "./ceo-planning-schema.js";
+export type { CeoPlan, CeoPlanReview, CeoPlanApprovalStatus } from "./ceo-planning-schema.js";
 export { businessProfiles, BUSINESS_RISK_TOLERANCES, BUSINESS_MODELS, BUSINESS_DEVELOPMENT_STAGES } from "./business-profile-schema.js";
 export type { BusinessProfile, BusinessRiskTolerance, BusinessModel, BusinessDevelopmentStage } from "./business-profile-schema.js";
 

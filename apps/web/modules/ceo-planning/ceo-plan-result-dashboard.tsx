@@ -92,6 +92,20 @@ export function parseStructuredPlanFromTaskResult(raw: string | null | undefined
   }
 }
 
+/** Mirrors the V3.1 approval contract in the client so invalid JSON never gets an Approve button. */
+export function isStructuredPlanValidForApproval(input: unknown): input is StructuredPlanRecord {
+  if (!isRecord(input) || input.version !== "v3.1" || typeof input.objective !== "string" || !input.objective.trim()) return false;
+  const textList = (item: unknown, required = false) => Array.isArray(item) && (!required || item.length > 0) && item.every((entry) => typeof entry === "string" && Boolean(entry.trim()));
+  if (!textList(input.businessAnalysis, true) || !textList(input.strategy, true) || !textList(input.assumptions) || !textList(input.risks) || !textList(input.feasibilityWarnings)) return false;
+  const resources = input.resourceAllocation;
+  if (!isRecord(resources) || typeof resources.summary !== "string" || !resources.summary.trim() || !(resources.humanHoursAssumption === null || typeof resources.humanHoursAssumption === "number") || !textList(resources.aiSupportNotes)) return false;
+  const validPhases = records(input.phases).length > 0 && records(input.phases).every((phase) => [phase.name, phase.milestone, phase.timeframe].every((field) => typeof field === "string" && Boolean(field.trim())));
+  const validTasks = records(input.tasks).length > 0 && records(input.tasks).every((task) => typeof task.id === "string" && /^TASK-\d{2,}$/i.test(task.id) && [task.title, task.description, task.deliverable, task.acceptanceCriteria].every((field) => typeof field === "string" && Boolean(field.trim())) && ["high", "medium", "low"].includes(String(task.priority)) && typeof task.estimatedHours === "number" && task.estimatedHours > 0 && Array.isArray(task.dependencies) && task.dependencies.every((dependency) => typeof dependency === "string" && /^TASK-\d{2,}$/i.test(dependency)) && ["HUMAN", "EXISTING_AGENT", "PROPOSED_AGENT"].includes(String(task.responsibleType)));
+  const validKpis = records(input.kpis).length > 0 && records(input.kpis).every((kpi) => [kpi.metric, kpi.target, kpi.deadline, kpi.measurementMethod, kpi.relatedObjective].every((field) => typeof field === "string" && Boolean(field.trim())));
+  const validAgents = Array.isArray(input.agentRecommendations) && records(input.agentRecommendations).length === input.agentRecommendations.length && records(input.agentRecommendations).every((agent) => typeof agent.name === "string" && Boolean(agent.name.trim()) && typeof agent.rationale === "string" && Boolean(agent.rationale.trim()) && ["EXISTING_AGENT", "PROPOSED_AGENT", "HUMAN"].includes(String(agent.status)) && textList(agent.verifiedCapabilities));
+  return validPhases && validTasks && validKpis && validAgents;
+}
+
 export function CeoPlanResultDashboard({
   plan,
   planStatus,

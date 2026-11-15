@@ -11,10 +11,20 @@ const userId = randomUUID();
 const otherOrganizationId = randomUUID();
 const context = { organizationId, userId, role: "owner" } as never;
 
-async function seedTask(status: "queued" | "failed" = "failed") {
+async function seedTask(status: "queued" | "failed" | "completed" = "failed", result: string | null = null) {
   const id = randomUUID();
-  await db.insert(aiTasks).values({ id, organizationId, createdBy: userId, title: "Kế hoạch CEO: fixture", description: "fixture", status, completedAt: status === "failed" ? new Date() : null });
+  await db.insert(aiTasks).values({ id, organizationId, createdBy: userId, title: "Kế hoạch CEO: fixture", description: "fixture", status, result, completedAt: status === "queued" ? null : new Date() });
   return id;
+}
+
+function structuredPlan() {
+  return {
+    version: "v3.1", objective: "Tăng trưởng có kiểm soát", businessAnalysis: ["Có dữ liệu nền tảng."], strategy: ["Thử nghiệm nhỏ."], assumptions: [], risks: [],
+    phases: [{ name: "Khởi động", milestone: "Chốt mục tiêu", timeframe: "Tuần 1" }],
+    resourceAllocation: { summary: "Cần xác nhận nguồn lực.", humanHoursAssumption: null, aiSupportNotes: [] },
+    tasks: [{ id: "TASK-01", title: "Phân tích", description: "Phân tích hiện trạng.", deliverable: "Bản tóm tắt", acceptanceCriteria: "Có phát hiện rõ ràng.", priority: "high", estimatedHours: 2, dependencies: [], responsibleType: "HUMAN", agentRef: null }],
+    agentRecommendations: [], kpis: [{ metric: "Lead", target: "Mục tiêu cần xác nhận", deadline: "30 ngày", measurementMethod: "Đối chiếu CRM", relatedObjective: "Tăng trưởng" }], feasibilityWarnings: [],
+  };
 }
 
 async function seedAgent() {
@@ -89,4 +99,29 @@ test("CEO delete is organization-scoped, soft, and rejects a running task", asyn
   await assert.rejects(() => service.get(context, planId), /Không tìm thấy/);
   const [deleted] = await db.select().from(ceoPlans).where(eq(ceoPlans.id, planId));
   assert.ok(deleted?.deletedAt);
+});
+
+test("CEO approval accepts a completed valid V3.1 plan and legacy Markdown, but rejects invalid JSON", async () => {
+  const service = new CeoPlanningService({} as never, {} as never);
+  const agentId = await seedAgent();
+  const valid = structuredPlan();
+  const structuredTaskId = await seedTask("completed", JSON.stringify(valid));
+  const structuredPlanId = randomUUID();
+  await db.insert(ceoPlans).values({ id: structuredPlanId, organizationId, createdBy: userId, ceoAgentId: agentId, taskId: structuredTaskId, title: "structured", objective: "objective", structuredPlan: valid, structuredPlanVersion: "v3.1" });
+  const approvedStructured = await service.decide(context, structuredPlanId, { decision: "approved" });
+  assert.equal(approvedStructured.approvalStatus, "approved");
+
+  const markdown = "# Mục tiêu\nTăng trưởng.\n## Phân tích và bối cảnh\nBối cảnh.\n## Giả định và rủi ro\nRủi ro.\n## Chiến lược đề xuất\nChiến lược.\n## Công việc đề xuất\n| Công việc | Owner |\n| --- | --- |\n| Phân tích | CEO |\n## Nhân viên AI phù hợp và lý do\nCEO phù hợp.\n## Chỉ số theo dõi\nLead.";
+  const markdownTaskId = await seedTask("completed", markdown);
+  const markdownPlanId = randomUUID();
+  await db.insert(ceoPlans).values({ id: markdownPlanId, organizationId, createdBy: userId, ceoAgentId: agentId, taskId: markdownTaskId, title: "markdown", objective: "objective" });
+  const approvedMarkdown = await service.decide(context, markdownPlanId, { decision: "approved" });
+  assert.equal(approvedMarkdown.approvalStatus, "approved");
+
+  const invalid = structuredPlan();
+  delete (invalid.kpis[0] as Record<string, unknown>).measurementMethod;
+  const invalidTaskId = await seedTask("completed", JSON.stringify(invalid));
+  const invalidPlanId = randomUUID();
+  await db.insert(ceoPlans).values({ id: invalidPlanId, organizationId, createdBy: userId, ceoAgentId: agentId, taskId: invalidTaskId, title: "invalid", objective: "objective" });
+  await assert.rejects(() => service.decide(context, invalidPlanId, { decision: "approved" }), /JSON kế hoạch không hợp lệ/);
 });

@@ -1,3 +1,8 @@
+import {
+  ceoStructuredPlanSchema,
+  extractCeoStructuredPlan,
+} from "./ceo-structured-plan.js";
+
 const REQUIRED_SECTIONS = ["Mục tiêu", "Phân tích và bối cảnh", "Giả định và rủi ro", "Chiến lược đề xuất", "Công việc đề xuất", "Nhân viên AI phù hợp và lý do", "Chỉ số theo dõi"];
 
 function incompleteTable(markdown: string) {
@@ -13,7 +18,6 @@ function incompleteTable(markdown: string) {
   }
   return false;
 }
-
 export function validateCeoPlanReport(markdown: string | null | undefined): string | null {
   const value = markdown?.trim();
   if (!value) return "CEO chưa trả về nội dung kế hoạch.";
@@ -24,7 +28,32 @@ export function validateCeoPlanReport(markdown: string | null | undefined): stri
   return null;
 }
 
-export function ceoPlanApprovalError(task: { status: string; result: string | null } | null | undefined) {
+function looksLikeStructuredPlanOutput(raw: string | null | undefined) {
+  const value = raw?.trim();
+  return Boolean(value?.startsWith("{") || value?.startsWith("```json"));
+}
+
+/**
+ * The approval gate accepts exactly one of two historical contracts:
+ * validated V3 structured JSON or a complete legacy Markdown report.
+ */
+export function ceoPlanApprovalError(
+  task: { status: string; result: string | null } | null | undefined,
+  persistedStructuredPlan?: unknown | null,
+) {
   if (!task || task.status !== "completed") return "Chỉ có thể phê duyệt khi CEO đã hoàn tất kế hoạch.";
+
+  if (persistedStructuredPlan !== null && persistedStructuredPlan !== undefined) {
+    const parsed = ceoStructuredPlanSchema.safeParse(persistedStructuredPlan);
+    return parsed.success ? null : "Structured plan đã lưu không hợp lệ.";
+  }
+
+  if (looksLikeStructuredPlanOutput(task.result)) {
+    const extracted = extractCeoStructuredPlan(task.result!);
+    return "plan" in extracted
+      ? null
+      : `JSON kế hoạch không hợp lệ: ${extracted.error}`;
+  }
+
   return validateCeoPlanReport(task.result);
 }

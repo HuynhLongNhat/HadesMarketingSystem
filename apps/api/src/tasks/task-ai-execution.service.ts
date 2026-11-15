@@ -10,6 +10,7 @@ import {
   aiTaskResearchSources,
   aiTasks,
   ceoPlans,
+  ceoPlanReviews,
   db,
 } from "@workspace/db/node";
 import { decryptCredential } from "../ai-credentials/credential-crypto.js";
@@ -22,6 +23,7 @@ import { SearchProviderRuntimeError } from "../search-providers/search-provider.
 import { canAttemptTaskExecution, canWorkerClaimTask, MAX_TASK_EXECUTIONS } from "./task-execution-state.js";
 import { extractCeoStructuredPlan, validateCeoPlanAgentReferences } from "../ceo-planning/ceo-structured-plan.js";
 import { resolveGenerationSettings } from "./generation-settings.js";
+import { extractStrategicReview } from "../ceo-planning/strategic-review.js";
 
 const TIMEOUT_MS = 60_000;
 const CEO_PLAN_TIMEOUT_MS = 180_000;
@@ -330,16 +332,18 @@ export class TaskAiExecutionService {
         if (decision.useResearch) evidence = await this.webResearch(task, executionToken, decision.query ?? undefined);
       }
       const isCeoPlan = task.title.startsWith("Kế hoạch CEO:");
-      const prompt = isCeoPlan ? this.ceoPrompt(task) : this.prompt(task, evidence);
+      const [reviewRun] = await db.select({ id: ceoPlanReviews.id }).from(ceoPlanReviews).where(and(eq(ceoPlanReviews.taskId, task.id), eq(ceoPlanReviews.organizationId, task.organizationId))).limit(1);
+      const isStrategicReview = Boolean(reviewRun);
+      const prompt = isStrategicReview ? task.description : isCeoPlan ? this.ceoPrompt(task) : this.prompt(task, evidence);
       const [planSettings] = isCeoPlan ? await db.select({ generationSettings: ceoPlans.generationSettings, businessProfileSnapshot: ceoPlans.businessProfileSnapshot }).from(ceoPlans).where(and(eq(ceoPlans.taskId, task.id), eq(ceoPlans.organizationId, task.organizationId))).limit(1) : [];
       const effective = planSettings ? resolveGenerationSettings(planSettings.generationSettings) : null;
-      const maxOutputTokens = effective?.maxOutputTokens ?? (isCeoPlan ? CEO_PLAN_MAX_OUTPUT_TOKENS : MAX_OUTPUT_TOKENS);
+      const maxOutputTokens = effective?.maxOutputTokens ?? (isCeoPlan ? CEO_PLAN_MAX_OUTPUT_TOKENS : isStrategicReview ? 4_000 : MAX_OUTPUT_TOKENS);
       const reservation = await this.quota.reserve(task.organizationId, Math.max(1, Math.ceil(Buffer.byteLength(prompt, "utf8") / 2) + maxOutputTokens));
       if (reservation.limited && !reservation.allowed) throw new TaskProviderError("Đã vượt quota token AI của Organization.", false);
       if (reservation.limited) reservationIds.push(reservation.reservationId);
       if (isCeoPlan) this.logger.log(JSON.stringify({ event: "ceo_plan.generation_started", taskId: task.id, organizationId: task.organizationId }));
       let result = await this.request(runtime, prompt, maxOutputTokens, (effective?.timeoutSeconds ?? (isCeoPlan ? CEO_PLAN_TIMEOUT_MS / 1000 : TIMEOUT_MS / 1000)) * 1000);
-      usageEntries.push({ usage: result.usage, purpose: isCeoPlan ? "ceo_planning_generation" : "market_research_task" });
+      usageEntries.push({ usage: result.usage, purpose: isCeoPlan ? "ceo_planning_generation" : isStrategicReview ? "strategic_review" : "market_research_task" });
       if (isCeoPlan) {
         let structured = extractCeoStructuredPlan(result.text);
         if ("error" in structured) {
@@ -379,6 +383,13 @@ export class TaskAiExecutionService {
         }
         const [stored] = await db.update(ceoPlans).set({ structuredPlan: structured.plan, structuredPlanVersion: structured.plan.version, updatedAt: new Date() }).where(and(eq(ceoPlans.taskId, task.id), eq(ceoPlans.organizationId, task.organizationId))).returning({ id: ceoPlans.id });
         if (!stored) throw new TaskProviderError("Không tìm thấy kế hoạch CEO để lưu JSON có cấu trúc.", false);
+      }
+      if (isStrategicReview) {
+        const review = extractStrategicReview(result.text);
+        if ("error" in review) throw new TaskProviderError(`Strategic Reviewer chưa tạo báo cáo hợp lệ: ${review.error}`, false, null, "STRUCTURED_OUTPUT_INVALID");
+        const [stored] = await db.update(ceoPlanReviews).set({ report: review.report, reportVersion: review.report.version, reviewedAt: new Date(), updatedAt: new Date() }).where(and(eq(ceoPlanReviews.id, reviewRun!.id), eq(ceoPlanReviews.organizationId, task.organizationId), eq(ceoPlanReviews.taskId, task.id))).returning({ id: ceoPlanReviews.id });
+        if (!stored) throw new TaskProviderError("Không thể lưu báo cáo Strategic Reviewer.", false);
+        await this.event(task.id, task.organizationId, "strategic_review_completed", "Strategic Reviewer đã hoàn tất đánh giá.");
       }
       const completed = await db.update(aiTasks).set({ status: "completed", result: result.text, error: null, executionToken: null, leaseExpiresAt: null, completedAt: new Date(), updatedAt: new Date() }).where(and(eq(aiTasks.id, task.id), eq(aiTasks.organizationId, task.organizationId), eq(aiTasks.executionToken, executionToken), ne(aiTasks.status, "cancelled"))).returning({ id: aiTasks.id });
       if (completed.length) {

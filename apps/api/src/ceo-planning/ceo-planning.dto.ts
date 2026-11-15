@@ -16,3 +16,7 @@ export class DecideCeoPlanDto {
   @IsIn(["approved", "rejected"] as const) decision!: typeof CEO_PLAN_APPROVAL_STATUSES[number];
   @IsOptional() @IsString() @MaxLength(2000) note?: string;
 }
+export class CreateStrategicReviewDto {
+  @IsString() @MaxLength(200) providerConnectionId!: string;
+  @IsString() @MaxLength(200) modelId!: string;
+}

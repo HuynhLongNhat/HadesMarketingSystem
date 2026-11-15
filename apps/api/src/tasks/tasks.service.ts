@@ -17,7 +17,7 @@ export class TasksService {
     await db.insert(aiTaskEvents).values({ id: randomUUID(), taskId, organizationId, type, message });
   }
 
-  async create(ctx: RequestContext, dto: CreateTaskDto, options: { enqueue?: boolean; webResearchEnabled?: boolean } = {}) {
+  async create(ctx: RequestContext, dto: CreateTaskDto, options: { enqueue?: boolean; webResearchEnabled?: boolean; runtime?: { connectionId: string; modelId: string } } = {}) {
     const title = dto.title.trim(), description = dto.description.trim();
     if (!title || !description) throw new BadRequestException("Task title and description are required");
     // New Agent tasks let the configured model decide at execution time whether
@@ -25,7 +25,12 @@ export class TasksService {
     const webResearchEnabled = options.webResearchEnabled ?? Boolean(dto.agentId);
     let connectionId: string, modelId: string;
     let agentSnapshot: Pick<typeof aiTasks.$inferInsert, "agentId" | "agentName" | "agentRole" | "agentSystemPrompt" | "agentConnectionId" | "agentModelId"> = {};
-    if (dto.agentId) {
+    if (options.runtime) {
+      const [connection] = await db.select({ id: aiProviderConnections.id }).from(aiProviderConnections).where(and(eq(aiProviderConnections.organizationId, ctx.organizationId), eq(aiProviderConnections.id, options.runtime.connectionId), eq(aiProviderConnections.enabled, true))).limit(1);
+      if (!connection) throw new BadRequestException("Reviewer AI provider connection is unavailable");
+      connectionId = options.runtime.connectionId;
+      modelId = options.runtime.modelId;
+    } else if (dto.agentId) {
       const [agent] = await db.select().from(aiAgents).where(and(eq(aiAgents.id, dto.agentId), eq(aiAgents.organizationId, ctx.organizationId))).limit(1);
       if (!agent) throw new BadRequestException("Selected AI agent does not belong to this organization");
       if (agent.status !== "active") throw new BadRequestException("Selected AI agent is not active");
