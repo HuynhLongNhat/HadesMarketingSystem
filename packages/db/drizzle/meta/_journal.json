@@ -295,6 +295,13 @@
       "when": 1795654800000,
       "tag": "0042_ceo_plan_generation_settings",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1795741200000,
+      "tag": "0043_aromatic_sway",
+      "breakpoints": true
     }
   ]
 }

@@ -706,6 +706,33 @@ export function AiProvidersView({ embedded = false }: { embedded?: boolean }) {
         </Card>
       )}
 
+      <Card className="border-dashed">
+        <CardHeader className="gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <CardTitle>ChatGPT Account</CardTitle>
+            <Badge variant="outline">Chưa khả dụng</Badge>
+          </div>
+          <CardDescription>
+            Dùng ChatGPT Plan là lựa chọn riêng cho từng người dùng, không phải
+            API key hoặc kết nối cloud của tổ chức.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm text-muted-foreground">
+          <p>
+            Nova đang chờ phê duyệt Sign in with ChatGPT (SIWC) và một runtime
+            do chính người dùng kiểm soát. Vì vậy chưa có nút kết nối hay kiểm
+            tra giả lập.
+          </p>
+          <p>
+            Khi được hỗ trợ, mỗi người dùng sẽ tự ủy quyền tài khoản ChatGPT;
+            Nova không yêu cầu, hiển thị hoặc lưu mật khẩu/credential ChatGPT.
+          </p>
+          <Button type="button" variant="outline" disabled>
+            Đang chờ SIWC approval
+          </Button>
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader>
           <CardTitle>Thêm kết nối AI</CardTitle>

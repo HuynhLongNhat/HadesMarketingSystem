@@ -20,7 +20,6 @@ import type { AiTaskJobData } from "../jobs/jobs.service.js";
 import { SearchProviderRuntimeService } from "../search-providers/search-provider-runtime.service.js";
 import { SearchProviderRuntimeError } from "../search-providers/search-provider.adapter.js";
 import { canAttemptTaskExecution, canWorkerClaimTask, MAX_TASK_EXECUTIONS } from "./task-execution-state.js";
-import { validateCeoPlanReport } from "../ceo-planning/ceo-plan-validation.js";
 import { extractCeoStructuredPlan, validateCeoPlanAgentReferences } from "../ceo-planning/ceo-structured-plan.js";
 import { resolveGenerationSettings } from "./generation-settings.js";
 
@@ -40,7 +39,12 @@ export function isTruncatedFinishReason(value: unknown) {
 }
 
 export class TaskProviderError extends Error {
-  constructor(message: string, readonly retryable: boolean, readonly retryAfterSeconds: number | null = null) { super(message); }
+  constructor(
+    message: string,
+    readonly retryable: boolean,
+    readonly retryAfterSeconds: number | null = null,
+    readonly kind: "PROVIDER_ERROR" | "PROVIDER_RATE_LIMITED" | "PROVIDER_TIMEOUT" | "STRUCTURED_OUTPUT_INVALID" | "AGENT_REFERENCE_INVALID" = "PROVIDER_ERROR",
+  ) { super(message); }
 }
 
 const DEFAULT_RATE_LIMIT_RETRY_SECONDS = 60;
@@ -68,7 +72,7 @@ function safeError(error: unknown): string {
 
 /** Log enough to correlate an execution fault without ever serialising prompts or credentials. */
 function safeExecutionFailure(error: unknown) {
-  if (error instanceof TaskProviderError) return { kind: "provider", retryable: error.retryable };
+  if (error instanceof TaskProviderError) return { kind: error.kind, retryable: error.retryable };
   if (error instanceof HttpException) return { kind: "http", status: error.getStatus() };
   if (error instanceof Error) return { kind: "internal", name: error.name || "Error" };
   return { kind: "internal", name: typeof error };
@@ -91,6 +95,15 @@ export class TaskAiExecutionService {
       return `Bạn đang thực hiện nhiệm vụ với tư cách Agent “${task.agentName}”, vai trò “${task.agentRole ?? "không xác định"}”.\n\nĐây là system prompt snapshot của Agent tại thời điểm tạo task. Thực hiện theo hướng dẫn này khi không mâu thuẫn với các giới hạn hệ thống bên dưới:\n--- AGENT SYSTEM PROMPT ---\n${task.agentSystemPrompt ?? ""}\n--- END AGENT SYSTEM PROMPT ---\n\nNhiệm vụ\nTiêu đề: ${task.title}\nYêu cầu/bối cảnh: ${task.description}${researchContext}\n\nHãy hoàn thành nhiệm vụ theo đúng chuyên môn và định dạng phù hợp với yêu cầu, bằng tiếng Việt trừ khi nhiệm vụ yêu cầu ngôn ngữ khác.\n\n${agentLimitations}`;
     }
     return `Bạn là chuyên gia nghiên cứu thị trường. Hãy lập báo cáo bằng tiếng Việt cho nhiệm vụ sau.\n\nTiêu đề: ${task.title}\nYêu cầu/bối cảnh: ${task.description}\n\nBắt buộc dùng đúng các mục Markdown: Tóm tắt điều hành; Tổng quan thị trường; Khách hàng mục tiêu; Phân tích đối thủ (sơ bộ); Cơ hội kinh doanh; Rủi ro và giả định; Kế hoạch hành động 30 ngày; Giới hạn báo cáo.\n\n${limitations}`;
+  }
+
+  private ceoPrompt(task: { description: string; agentName: string | null; agentRole: string | null; agentSystemPrompt: string | null }) {
+    return `Bạn đang đảm nhiệm vai trò CEO AI “${task.agentName ?? "CEO"}”.\n\nSystem prompt snapshot của CEO (chỉ áp dụng khi không mâu thuẫn yêu cầu JSON):\n--- CEO SYSTEM PROMPT ---\n${task.agentSystemPrompt ?? ""}\n--- END CEO SYSTEM PROMPT ---\n\n${task.description}\n\nChỉ trả về một JSON object hợp lệ theo contract được nêu trong yêu cầu. Không Markdown, không code fence, không giải thích ngoài JSON.`;
+  }
+
+  private ceoRepairPrompt(raw: string, issues: Array<{ path: string; code: string; message: string; format: string | null; receivedType: string | null }>) {
+    const safeIssues = issues.map((issue) => ({ path: issue.path, code: issue.code, message: issue.message, format: issue.format, receivedType: issue.receivedType }));
+    return `Sửa đúng JSON kế hoạch CEO bên dưới để hợp lệ theo contract v3.1. Chỉ trả về JSON object đã sửa, không Markdown/code fence/giải thích. Giữ nguyên toàn bộ nội dung hợp lệ; chỉ bổ sung hoặc sửa field bị lỗi. Với KPI thiếu measurementMethod, nêu cách đo lường thực tế nhưng không bịa dữ liệu kinh doanh. Không đổi objective nếu không cần. Không tạo UUID/Agent ID; chỉ dùng TASK-xx và AGENT-xx đã có trong roster.\n\nValidation metadata: ${JSON.stringify(safeIssues)}\n\nJSON cần sửa:\n${raw}`;
   }
 
   private async event(taskId: string, organizationId: string, type: string, message: string) {
@@ -205,7 +218,9 @@ export class TaskAiExecutionService {
       }
     } catch (error) {
       const name = error instanceof Error ? error.name : "";
-      throw new TaskProviderError(name === "TimeoutError" || name === "AbortError" ? "AI Provider hết thời gian phản hồi." : "Không thể kết nối AI Provider.", true);
+      const timedOut = name === "TimeoutError" || name === "AbortError";
+      this.logger.warn(JSON.stringify({ event: "ai_provider.response_error", provider: runtime.provider, category: timedOut ? "request_timeout" : "network_error", exception: name || "unknown", durationMs: Date.now() - started }));
+      throw new TaskProviderError(timedOut ? "AI Provider hết thời gian phản hồi." : "Không thể kết nối AI Provider.", true, null, timedOut ? "PROVIDER_TIMEOUT" : "PROVIDER_ERROR");
     }
     if (!response.ok) {
       const retryAfter = response.status === 429 ? retryAfterSeconds(response.headers.get("retry-after")) : null;
@@ -213,7 +228,7 @@ export class TaskAiExecutionService {
       await response.body?.cancel();
       if (response.status === 429) {
         const waitSeconds = retryAfter ?? DEFAULT_RATE_LIMIT_RETRY_SECONDS;
-        throw new TaskProviderError(`AI Provider đang giới hạn lượt gọi. Hãy thử lại sau ít nhất ${waitSeconds} giây.`, true, waitSeconds);
+        throw new TaskProviderError(`AI Provider đang giới hạn lượt gọi. Hãy thử lại sau ít nhất ${waitSeconds} giây.`, true, waitSeconds, "PROVIDER_RATE_LIMITED");
       }
       throw new TaskProviderError(`AI Provider trả về HTTP ${response.status}.`, isRetryableStatus(response.status));
     }
@@ -224,7 +239,7 @@ export class TaskAiExecutionService {
       const name = error instanceof Error ? error.name : "unknown";
       const category = name === "TimeoutError" || name === "AbortError" ? "response_timeout" : name === "SyntaxError" ? "json_parse_failure" : "body_read_failure";
       this.logger.warn(JSON.stringify({ event: "ai_provider.response_error", provider: runtime.provider, category, status: response.status, contentType: response.headers.get("content-type"), requestId: response.headers.get("x-request-id") ?? response.headers.get("x-openrouter-request-id") ?? null, exception: name, durationMs: Date.now() - started }));
-      throw new TaskProviderError(category === "response_timeout" ? "AI Provider hết thời gian đọc phản hồi." : category === "json_parse_failure" ? "AI Provider trả về JSON không hợp lệ." : "Không thể đọc phản hồi từ AI Provider.", true);
+      throw new TaskProviderError(category === "response_timeout" ? "AI Provider hết thời gian đọc phản hồi." : category === "json_parse_failure" ? "AI Provider trả về JSON không hợp lệ." : "Không thể đọc phản hồi từ AI Provider.", true, null, category === "response_timeout" ? "PROVIDER_TIMEOUT" : "PROVIDER_ERROR");
     }
     const text = runtime.protocol === "anthropic" ? body.content?.map((part) => part.text ?? "").join("") : runtime.protocol === "google" ? body.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("") : body.choices?.[0]?.message?.content;
     if (!text?.trim()) {
@@ -303,7 +318,8 @@ export class TaskAiExecutionService {
     }, LEASE_HEARTBEAT_MS);
     heartbeat.unref();
     let runtime: Runtime | null = null;
-    let reservationId: string | null = null;
+    const reservationIds: string[] = [];
+    const usageEntries: Array<{ usage: Usage; purpose: string }> = [];
     let usageReliable = true;
     try {
       runtime = await this.runtime(task);
@@ -313,19 +329,41 @@ export class TaskAiExecutionService {
         await this.event(task.id, task.organizationId, "research_decision", decision.useResearch ? "Agent quyết định cần Web Research." : decision.fallback ? "Agent không trả về quyết định hợp lệ; tiếp tục không dùng Web Research." : "Agent quyết định không cần Web Research.");
         if (decision.useResearch) evidence = await this.webResearch(task, executionToken, decision.query ?? undefined);
       }
-      const prompt = this.prompt(task, evidence);
-      const [planSettings] = task.title.startsWith("Kế hoạch CEO:") ? await db.select({ generationSettings: ceoPlans.generationSettings, businessProfileSnapshot: ceoPlans.businessProfileSnapshot }).from(ceoPlans).where(and(eq(ceoPlans.taskId, task.id), eq(ceoPlans.organizationId, task.organizationId))).limit(1) : [];
+      const isCeoPlan = task.title.startsWith("Kế hoạch CEO:");
+      const prompt = isCeoPlan ? this.ceoPrompt(task) : this.prompt(task, evidence);
+      const [planSettings] = isCeoPlan ? await db.select({ generationSettings: ceoPlans.generationSettings, businessProfileSnapshot: ceoPlans.businessProfileSnapshot }).from(ceoPlans).where(and(eq(ceoPlans.taskId, task.id), eq(ceoPlans.organizationId, task.organizationId))).limit(1) : [];
       const effective = planSettings ? resolveGenerationSettings(planSettings.generationSettings) : null;
-      const maxOutputTokens = effective?.maxOutputTokens ?? (task.title.startsWith("Kế hoạch CEO:") ? CEO_PLAN_MAX_OUTPUT_TOKENS : MAX_OUTPUT_TOKENS);
+      const maxOutputTokens = effective?.maxOutputTokens ?? (isCeoPlan ? CEO_PLAN_MAX_OUTPUT_TOKENS : MAX_OUTPUT_TOKENS);
       const reservation = await this.quota.reserve(task.organizationId, Math.max(1, Math.ceil(Buffer.byteLength(prompt, "utf8") / 2) + maxOutputTokens));
       if (reservation.limited && !reservation.allowed) throw new TaskProviderError("Đã vượt quota token AI của Organization.", false);
-      reservationId = reservation.limited ? reservation.reservationId : null;
-      const result = await this.request(runtime, prompt, maxOutputTokens, (effective?.timeoutSeconds ?? (task.title.startsWith("Kế hoạch CEO:") ? CEO_PLAN_TIMEOUT_MS / 1000 : TIMEOUT_MS / 1000)) * 1000);
-      if (task.title.startsWith("Kế hoạch CEO:")) {
-        const structured = extractCeoStructuredPlan(result.text);
+      if (reservation.limited) reservationIds.push(reservation.reservationId);
+      if (isCeoPlan) this.logger.log(JSON.stringify({ event: "ceo_plan.generation_started", taskId: task.id, organizationId: task.organizationId }));
+      let result = await this.request(runtime, prompt, maxOutputTokens, (effective?.timeoutSeconds ?? (isCeoPlan ? CEO_PLAN_TIMEOUT_MS / 1000 : TIMEOUT_MS / 1000)) * 1000);
+      usageEntries.push({ usage: result.usage, purpose: isCeoPlan ? "ceo_planning_generation" : "market_research_task" });
+      if (isCeoPlan) {
+        let structured = extractCeoStructuredPlan(result.text);
         if ("error" in structured) {
-          this.logger.warn(JSON.stringify({ event: "ceo_structured_plan.validation_failed", taskId: task.id, organizationId: task.organizationId, issues: structured.issues }));
-          throw new TaskProviderError(`CEO chưa tạo kế hoạch có cấu trúc: ${structured.error}`, false);
+          this.logger.warn(JSON.stringify({ event: "ceo_plan.validation_failed", taskId: task.id, organizationId: task.organizationId, issues: structured.issues ?? [] }));
+          await this.event(task.id, task.organizationId, "ceo_plan_validation_failed", "Kế hoạch CEO cần sửa định dạng JSON; đang thực hiện một lần sửa tự động.");
+          this.logger.log(JSON.stringify({ event: "ceo_plan.repair_started", taskId: task.id, organizationId: task.organizationId }));
+          const repairPrompt = this.ceoRepairPrompt(result.text, structured.issues ?? []);
+          const repairMaxOutputTokens = Math.min(maxOutputTokens, 4_000);
+          const repairReservation = await this.quota.reserve(task.organizationId, Math.max(1, Math.ceil(Buffer.byteLength(repairPrompt, "utf8") / 2) + repairMaxOutputTokens));
+          if (repairReservation.limited && !repairReservation.allowed) throw new TaskProviderError("Không đủ quota token AI để sửa JSON kế hoạch CEO.", false, null, "STRUCTURED_OUTPUT_INVALID");
+          if (repairReservation.limited) reservationIds.push(repairReservation.reservationId);
+          try {
+            result = await this.request(runtime, repairPrompt, repairMaxOutputTokens, (effective?.timeoutSeconds ?? CEO_PLAN_TIMEOUT_MS / 1000) * 1000);
+          } catch (error) {
+            this.logger.warn(JSON.stringify({ event: "ceo_plan.repair_failed", taskId: task.id, organizationId: task.organizationId, ...safeExecutionFailure(error) }));
+            throw error;
+          }
+          usageEntries.push({ usage: result.usage, purpose: "ceo_planning_repair" });
+          structured = extractCeoStructuredPlan(result.text);
+          if ("error" in structured) {
+            this.logger.warn(JSON.stringify({ event: "ceo_plan.repair_failed", taskId: task.id, organizationId: task.organizationId, issues: structured.issues }));
+            throw new TaskProviderError(`CEO chưa tạo kế hoạch có cấu trúc sau khi sửa: ${structured.error}`, false, null, "STRUCTURED_OUTPUT_INVALID");
+          }
+          this.logger.log(JSON.stringify({ event: "ceo_plan.repair_succeeded", taskId: task.id, organizationId: task.organizationId }));
         }
         const snapshotAgents = ((planSettings?.businessProfileSnapshot as { agents?: Array<{ id?: string; ref?: string; status?: string }> } | null)?.agents) ?? [];
         const organizationAgents = await db.select({ id: aiAgents.id, status: aiAgents.status }).from(aiAgents).where(eq(aiAgents.organizationId, task.organizationId)).limit(100);
@@ -337,7 +375,7 @@ export class TaskAiExecutionService {
         const referenceError = validateCeoPlanAgentReferences(structured.plan, validatedAgents);
         if (referenceError) {
           this.logger.warn(JSON.stringify({ event: "ceo_structured_plan.agent_reference_failed", taskId: task.id, organizationId: task.organizationId, category: "agent_reference" }));
-          throw new TaskProviderError(`CEO chưa tạo kế hoạch có cấu trúc: ${referenceError}`, false);
+          throw new TaskProviderError(`CEO chưa tạo kế hoạch có cấu trúc: ${referenceError}`, false, null, "AGENT_REFERENCE_INVALID");
         }
         const [stored] = await db.update(ceoPlans).set({ structuredPlan: structured.plan, structuredPlanVersion: structured.plan.version, updatedAt: new Date() }).where(and(eq(ceoPlans.taskId, task.id), eq(ceoPlans.organizationId, task.organizationId))).returning({ id: ceoPlans.id });
         if (!stored) throw new TaskProviderError("Không tìm thấy kế hoạch CEO để lưu JSON có cấu trúc.", false);
@@ -346,7 +384,8 @@ export class TaskAiExecutionService {
       if (completed.length) {
         // Record only after the terminal state is stored. A BullMQ retry will
         // then observe `completed` and cannot create a duplicate usage entry.
-        usageReliable = await this.usage.record({ organizationId: task.organizationId, provider: runtime.provider, modelId: runtime.modelId, purpose: "market_research_task", status: "success", inputTokens: token(result.usage.input), outputTokens: token(result.usage.output), totalTokens: token(result.usage.total), latencyMs: Date.now() - started });
+        usageReliable = (await Promise.all(usageEntries.map((entry) => this.usage.record({ organizationId: task.organizationId, provider: runtime!.provider, modelId: runtime!.modelId, purpose: entry.purpose, status: "success", inputTokens: token(entry.usage.input), outputTokens: token(entry.usage.output), totalTokens: token(entry.usage.total), latencyMs: Date.now() - started })))).every(Boolean);
+        if (isCeoPlan) this.logger.log(JSON.stringify({ event: "ceo_plan.generation_completed", taskId: task.id, organizationId: task.organizationId, repaired: usageEntries.length > 1 }));
         await this.event(task.id, task.organizationId, "completed", task.agentName ? `Nhiệm vụ của Agent ${task.agentName} đã hoàn tất.` : "Báo cáo nghiên cứu thị trường đã hoàn tất.");
       } else {
         // The provider may already have charged the request, but this Worker
@@ -365,6 +404,24 @@ export class TaskAiExecutionService {
         ...safeExecutionFailure(error),
       }), error instanceof Error ? error.stack?.split("\n").slice(1, 7).join("\n") : undefined);
       if (error instanceof TaskProviderError && error.retryable && !finalAttempt) {
+        // A request can have returned tokens before a later phase fails (for
+        // example the one permitted CEO JSON repair). Account for those tokens
+        // now; the next BullMQ attempt has a new execution token and must not
+        // duplicate this usage entry.
+        if (runtime && usageEntries.length) {
+          usageReliable = (await Promise.all(usageEntries.map((entry) => this.usage.record({
+            organizationId: task.organizationId,
+            provider: runtime!.provider,
+            modelId: runtime!.modelId,
+            purpose: entry.purpose,
+            status: "failed",
+            inputTokens: token(entry.usage.input),
+            outputTokens: token(entry.usage.output),
+            totalTokens: token(entry.usage.total),
+            latencyMs: Date.now() - started,
+            errorCode: error.kind,
+          })))).every(Boolean) && usageReliable;
+        }
         // Keep a short queue lease during BullMQ backoff. Dashboard polling
         // must not enqueue a second recovery job before this retry runs.
         const released = await db.update(aiTasks).set({ status: "queued", executionToken: null, leaseExpiresAt: new Date(Date.now() + LEASE_MS), updatedAt: new Date() }).where(and(eq(aiTasks.id, task.id), eq(aiTasks.organizationId, task.organizationId), eq(aiTasks.executionToken, executionToken))).returning({ id: aiTasks.id });
@@ -374,13 +431,16 @@ export class TaskAiExecutionService {
       }
       const failed = await db.update(aiTasks).set({ status: "failed", error: message, executionToken: null, leaseExpiresAt: null, completedAt: new Date(), updatedAt: new Date() }).where(and(eq(aiTasks.id, task.id), eq(aiTasks.organizationId, task.organizationId), eq(aiTasks.executionToken, executionToken), ne(aiTasks.status, "cancelled"))).returning({ id: aiTasks.id });
       if (failed.length) {
-        if (runtime) usageReliable = (await this.usage.record({ organizationId: task.organizationId, provider: runtime.provider, modelId: runtime.modelId, purpose: "market_research_task", status: "failed", latencyMs: Date.now() - started, errorCode: error instanceof TaskProviderError ? "provider_error" : "execution_error" })) && usageReliable;
+        if (runtime) {
+          const entries = usageEntries.length ? usageEntries : [{ usage: {} as Usage, purpose: "market_research_task" }];
+          usageReliable = (await Promise.all(entries.map((entry) => this.usage.record({ organizationId: task.organizationId, provider: runtime!.provider, modelId: runtime!.modelId, purpose: entry.purpose, status: "failed", inputTokens: token(entry.usage.input), outputTokens: token(entry.usage.output), totalTokens: token(entry.usage.total), latencyMs: Date.now() - started, errorCode: error instanceof TaskProviderError ? error.kind : "execution_error" })))).every(Boolean) && usageReliable;
+        }
         await this.event(task.id, task.organizationId, "failed", message);
       } else usageReliable = false;
       if (error instanceof TaskProviderError && error.retryable) throw error;
     } finally {
       clearInterval(heartbeat);
-      if (reservationId) {
+      for (const reservationId of reservationIds) {
         try { if (usageReliable) await this.quota.release(task.organizationId, reservationId); else await this.quota.retainUntilPeriodEnd(task.organizationId, reservationId); } catch { this.logger.error("Could not settle task quota reservation"); }
       }
     }

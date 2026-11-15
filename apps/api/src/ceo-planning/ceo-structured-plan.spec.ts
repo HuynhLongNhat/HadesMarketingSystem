@@ -47,6 +47,37 @@ test("rejects a dependency that does not reference a declared local task", () =>
   assert.ok("error" in result);
   if ("error" in result) assert.equal(result.issues?.[0]?.path, "tasks.0.dependencies");
 });
+test("reports a missing KPI measurement method as safe repair metadata and accepts the repaired plan", () => {
+  const invalid = validPlan();
+  delete (invalid.kpis as Array<Record<string, unknown>>)[0]!.measurementMethod;
+  const result = extractCeoStructuredPlan(JSON.stringify(invalid));
+  assert.ok("error" in result);
+  if ("error" in result) {
+    const issue = (result.issues ?? []).find((value) => value.path === "kpis.0.measurementMethod");
+    assert.equal(issue?.code, "invalid_type");
+    assert.equal(issue?.expected, "string");
+    assert.equal(issue?.receivedType, "missing");
+  }
+  (invalid.kpis as Array<Record<string, unknown>>)[0]!.measurementMethod = "Đối chiếu số liệu CRM hàng tuần";
+  assert.ok(!("error" in extractCeoStructuredPlan(JSON.stringify(invalid))));
+});
+test("returns bounded metadata for several missing required fields and malformed JSON", () => {
+  const incomplete = validPlan();
+  delete incomplete.objective;
+  delete (incomplete.kpis as Array<Record<string, unknown>>)[0]!.target;
+  delete (incomplete.tasks as Array<Record<string, unknown>>)[0]!.deliverable;
+  const invalid = extractCeoStructuredPlan(JSON.stringify(incomplete));
+  assert.ok("error" in invalid);
+  if ("error" in invalid) {
+    const metadata = invalid.issues ?? [];
+    assert.ok(metadata.length >= 3);
+    assert.ok(metadata.length <= 10);
+    assert.ok(metadata.every((issue) => issue.receivedType === "missing" || issue.receivedType === null));
+  }
+  const malformed = extractCeoStructuredPlan('{not-json}');
+  assert.ok("error" in malformed);
+  if ("error" in malformed) assert.match(malformed.error ?? "", /không thể phân tích/);
+});
 test("keeps a valid legacy UUID agent assignment readable but organization-scoped", () => {
   const plan = validPlan(); delete task(plan).agentRef; task(plan).agentId = existingAgentId; delete recommendation(plan).agentRef; recommendation(plan).agentId = existingAgentId;
   assert.equal(validateCeoPlanAgentReferences(parsed(plan), [{ id: existingAgentId, status: "active" }]), null);

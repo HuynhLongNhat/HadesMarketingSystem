@@ -50,7 +50,16 @@ export function validateCeoPlanAgentReferences(plan: CeoStructuredPlan, agents: 
 }
 
 function issues(error: z.ZodError): CeoPlanValidationIssue[] {
-  return error.issues.slice(0, 10).map((issue) => ({ path: issue.path.map(String).join("."), code: issue.code, message: issue.message, expected: "expected" in issue && typeof issue.expected === "string" ? issue.expected : null, format: "format" in issue && typeof issue.format === "string" ? issue.format : null, receivedType: "input" in issue ? typeof issue.input : null }));
+  return error.issues.slice(0, 10).map((issue) => ({
+    path: issue.path.map(String).join("."),
+    code: issue.code,
+    message: issue.message,
+    expected: "expected" in issue && typeof issue.expected === "string" ? issue.expected : null,
+    format: "format" in issue && typeof issue.format === "string" ? issue.format : null,
+    // Zod omits `input` for a missing object property. "missing" is useful
+    // repair metadata without exposing the plan's raw value in logs.
+    receivedType: "input" in issue ? typeof issue.input : issue.code === "invalid_type" ? "missing" : null,
+  }));
 }
 
 export function extractCeoStructuredPlan(raw: string) {

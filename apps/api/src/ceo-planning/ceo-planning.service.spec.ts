@@ -3,21 +3,17 @@ import test from "node:test";
 import { CeoPlanningService } from "./ceo-planning.service.js";
 import { CeoPlanningContextBuilder } from "./ceo-planning-context.builder.js";
 
-test("CEO planning prompt requires a compact, complete seven-section plan", () => {
+test("CEO planning prompt requires the V3.1 structured-plan contract", () => {
   const contexts = { formatForPrompt: () => "DỮ LIỆU THAM KHẢO ĐÃ XÁC NHẬN" };
   const service = new CeoPlanningService({} as never, contexts as never);
   const prompt = (Reflect.get(service, "prompt") as (context: { objective: string }) => string).call(service, { objective: "Mở rộng thị trường SME" });
-  const sections = ["# Mục tiêu", "## Phân tích và bối cảnh", "## Giả định và rủi ro", "## Chiến lược đề xuất", "## Công việc đề xuất", "## Nhân viên AI phù hợp và lý do", "## Chỉ số theo dõi"];
-  let previous = -1;
-  for (const section of sections) {
-    const index = prompt.indexOf(section);
-    assert.ok(index > previous, `missing or unordered section: ${section}`);
-    previous = index;
+  for (const field of ["version", "objective", "businessAnalysis", "strategy", "assumptions", "risks", "phases", "resourceAllocation", "tasks", "agentRecommendations", "kpis", "feasibilityWarnings"]) {
+    assert.match(prompt, new RegExp(`"${field}"`), `missing schema field: ${field}`);
   }
-  assert.match(prompt, /tối đa 5 hàng công việc ưu tiên/);
-  assert.match(prompt, /Ưu tiên \| Công việc \| Kết quả mong đợi \| Agent phù hợp/);
-  assert.match(prompt, /Giả định:/);
-  assert.match(prompt, /không tự tạo, giao hoặc thực thi/);
+  assert.match(prompt, /TASK-01/);
+  assert.match(prompt, /measurementMethod/);
+  assert.match(prompt, /relatedObjective/);
+  assert.match(prompt, /Không tự tạo\/giao task/);
 });
 
 test("CEO planning context labels profile and additional text as reference data", () => {

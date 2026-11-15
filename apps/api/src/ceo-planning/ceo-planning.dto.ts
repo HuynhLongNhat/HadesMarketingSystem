@@ -10,6 +10,7 @@ export class CreateCeoPlanDto {
   @IsOptional() @IsInt() @Min(1) @Max(8000) maxOutputTokens?: number;
   @IsOptional() @IsInt() @Min(10) @Max(180) timeoutSeconds?: number;
   @IsOptional() @IsIn(["low", "medium", "high"] as const) reasoningEffort?: "low" | "medium" | "high";
+  @IsOptional() @IsIn(["api_provider", "chatgpt_plan"] as const) executionSource?: "api_provider" | "chatgpt_plan";
 }
 export class DecideCeoPlanDto {
   @IsIn(["approved", "rejected"] as const) decision!: typeof CEO_PLAN_APPROVAL_STATUSES[number];

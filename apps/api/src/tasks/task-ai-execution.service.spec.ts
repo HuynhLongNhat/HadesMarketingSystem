@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 
 import { AiUsageQuotaService } from "../conversations/ai-usage-quota.service.js";
 import { AiUsageRecorder } from "../conversations/ai-usage-recorder.js";
-import { TaskAiExecutionService, isTruncatedFinishReason } from "./task-ai-execution.service.js";
+import { TaskAiExecutionService, TaskProviderError, isTruncatedFinishReason } from "./task-ai-execution.service.js";
 
 function service() {
   return new TaskAiExecutionService(
@@ -96,6 +96,18 @@ describe("AI task prompts", () => {
     } finally { globalThis.fetch = previousFetch; }
   });
 
+  it("uses a CEO-only JSON prompt and can build a single repair request without exposing it in logs", () => {
+    const instance = service();
+    const ceoPrompt = Reflect.get(instance, "ceoPrompt") as (task: Pick<PromptTask, "description" | "agentName" | "agentRole" | "agentSystemPrompt">) => string;
+    const repairPrompt = Reflect.get(instance, "ceoRepairPrompt") as (raw: string, issues: Array<{ path: string; code: string; message: string; format: string | null; receivedType: string | null }>) => string;
+    const prompt = ceoPrompt({ description: "Contract JSON v3.1", agentName: "CEO", agentRole: "ceo", agentSystemPrompt: "Ưu tiên tính khả thi." });
+    assert.match(prompt, /Chỉ trả về một JSON object/);
+    assert.doesNotMatch(prompt, /Tóm tắt điều hành/);
+    const repair = repairPrompt('{"version":"v3.1"}', [{ path: "kpis.0.measurementMethod", code: "invalid_type", message: "Required", format: null, receivedType: "undefined" }]);
+    assert.match(repair, /kpis\.0\.measurementMethod/);
+    assert.match(repair, /\{"version":"v3\.1"\}/);
+  });
+
   it("normalizes an aborted provider request into a safe timeout error", async () => {
     const previousFetch = globalThis.fetch;
     globalThis.fetch = async () => {
@@ -105,12 +117,32 @@ describe("AI task prompts", () => {
     };
     try {
       await assert.rejects(
-        () => (Reflect.get(service(), "request") as (runtime: object, prompt: string) => Promise<unknown>)({ provider: "openrouter", protocol: "openai", endpoint: "https://example.invalid", apiKey: "redacted", modelId: "free-model" }, "test"),
+        () => (Reflect.get(service(), "request") as (runtime: object, prompt: string) => Promise<unknown>).bind(service())({ provider: "openrouter", protocol: "openai", endpoint: "https://example.invalid", apiKey: "redacted", modelId: "free-model" }, "test"),
         /hết thời gian phản hồi/,
       );
     } finally {
       globalThis.fetch = previousFetch;
     }
+  });
+
+  it("classifies a timeout while reading a successful response body as a provider timeout", async () => {
+    const previousFetch = globalThis.fetch;
+    const timeout = new Error("body timed out");
+    timeout.name = "TimeoutError";
+    globalThis.fetch = (async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ "content-type": "application/json" }),
+      json: async () => { throw timeout; },
+    }) as unknown as Response) as typeof fetch;
+    const instance = service();
+    const request = (Reflect.get(instance, "request") as (runtime: object, prompt: string) => Promise<unknown>).bind(instance);
+    try {
+      await assert.rejects(
+        () => request({ provider: "openrouter", protocol: "openai", endpoint: "https://example.invalid", apiKey: "redacted", modelId: "free" }, "test"),
+        (error: unknown) => error instanceof TaskProviderError && error.kind === "PROVIDER_TIMEOUT" && /hết thời gian đọc phản hồi/.test(error.message),
+      );
+    } finally { globalThis.fetch = previousFetch; }
   });
 
   it("classifies malformed JSON and empty OpenRouter content separately", async () => {
@@ -131,7 +163,10 @@ describe("AI task prompts", () => {
     const request = (Reflect.get(instance, "request") as (runtime: object, prompt: string) => Promise<unknown>).bind(instance);
     globalThis.fetch = (async () => new Response("{}", { status: 429, headers: { "content-type": "application/json", "retry-after": "75" } })) as typeof fetch;
     try {
-      await assert.rejects(() => request({ provider: "openrouter", protocol: "openai", endpoint: "https://example.invalid", apiKey: "redacted", modelId: "free" }, "test"), /giới hạn lượt gọi.*75 giây/);
+      await assert.rejects(
+        () => request({ provider: "openrouter", protocol: "openai", endpoint: "https://example.invalid", apiKey: "redacted", modelId: "free" }, "test"),
+        (error: unknown) => error instanceof TaskProviderError && error.kind === "PROVIDER_RATE_LIMITED" && /giới hạn lượt gọi.*75 giây/.test(error.message),
+      );
     } finally { globalThis.fetch = previousFetch; }
   });
 });
