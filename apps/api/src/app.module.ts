@@ -22,6 +22,7 @@ import { CrmContactsModule } from "./crm/contacts/contacts.module.js";
 import { TasksModule } from "./tasks/tasks.module.js";
 import { SearchProvidersModule } from "./search-providers/search-providers.module.js";
 import { CeoPlanningModule } from "./ceo-planning/ceo-planning.module.js";
+import { BusinessDoctrineModule } from "./business-doctrines/business-doctrine.module.js";
 @Module({
   imports: [
     DatabaseModule,
@@ -52,6 +53,7 @@ import { CeoPlanningModule } from "./ceo-planning/ceo-planning.module.js";
     TasksModule,
     SearchProvidersModule,
     CeoPlanningModule,
+    BusinessDoctrineModule,
   ],
   controllers: [HealthController],
 })

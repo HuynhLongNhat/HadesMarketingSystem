@@ -195,6 +195,8 @@ export { ceoPlans, ceoPlanReviews, CEO_PLAN_APPROVAL_STATUSES } from "./ceo-plan
 export type { CeoPlan, CeoPlanReview, CeoPlanApprovalStatus } from "./ceo-planning-schema.js";
 export { businessProfiles, BUSINESS_RISK_TOLERANCES, BUSINESS_MODELS, BUSINESS_DEVELOPMENT_STAGES } from "./business-profile-schema.js";
 export type { BusinessProfile, BusinessRiskTolerance, BusinessModel, BusinessDevelopmentStage } from "./business-profile-schema.js";
+export { businessDoctrines } from "./business-doctrine-schema.js";
+export type { BusinessDoctrine } from "./business-doctrine-schema.js";
 
 export {
   crmContacts,

@@ -54,6 +54,11 @@ export const ceoPlanReviews = pgTable("ceo_plan_reviews", {
   planId: text("plan_id").notNull().references(() => ceoPlans.id, { onDelete: "cascade" }),
   taskId: text("task_id").notNull().references(() => aiTasks.id, { onDelete: "restrict" }),
   createdBy: text("created_by").notNull().references(() => user.id, { onDelete: "restrict" }),
+  /** Agent selected by the owner to independently review this plan. Legacy reviews remain null. */
+  reviewerAgentId: text("reviewer_agent_id").references(() => aiAgents.id, { onDelete: "set null" }),
+  /** Immutable, display-safe reviewer identity retained even if an Agent is later removed. */
+  reviewerAgentName: text("reviewer_agent_name"),
+  reviewerAgentRole: text("reviewer_agent_role"),
   providerConnectionId: text("provider_connection_id").notNull(),
   modelId: text("model_id").notNull(),
   planVersion: varchar("plan_version", { length: 32 }),
@@ -64,6 +69,7 @@ export const ceoPlanReviews = pgTable("ceo_plan_reviews", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   uniqueIndex("ceo_plan_reviews_task_unique").on(table.taskId),
+  index("ceo_plan_reviews_org_reviewer_created_idx").on(table.organizationId, table.reviewerAgentId, table.createdAt),
   index("ceo_plan_reviews_org_plan_created_idx").on(table.organizationId, table.planId, table.createdAt),
   uniqueIndex("ceo_plan_reviews_id_org_unique").on(table.id, table.organizationId),
 ]);

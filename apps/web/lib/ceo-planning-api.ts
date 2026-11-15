@@ -8,7 +8,7 @@ export type CeoGenerationSettings = { preset: GenerationPreset; maxOutputTokens:
 export type CreateCeoPlanInput = { ceoAgentId: string; title: string; objective: string; additionalContext?: string; preset: GenerationPreset; maxOutputTokens?: number; timeoutSeconds?: number; executionSource?: CeoExecutionSourceType };
 export type CeoBusinessProfileSnapshot = { profile: Record<string, unknown> | null; missingFields: string[]; agents?: Array<{ id?: string; ref?: string; name?: string; role?: string; enabledTools?: string[]; status?: string }> };
 export type CeoStructuredPlan = Record<string, unknown>;
-export type StrategicReview = { id:string; planId:string; taskId:string; providerConnectionId:string; modelId:string; planVersion:string|null; report:Record<string,unknown>|null; reportVersion:string|null; reviewedAt:string|null; createdAt:string; taskStatus:"queued"|"running"|"completed"|"failed"|"cancelled"|null; taskError:string|null };
+export type StrategicReview = { id:string; planId:string; taskId:string; reviewerAgentId:string|null; reviewerAgentName:string|null; reviewerAgentRole:string|null; providerConnectionId:string; modelId:string; planVersion:string|null; report:Record<string,unknown>|null; reportVersion:string|null; reviewedAt:string|null; createdAt:string; taskStatus:"queued"|"running"|"completed"|"failed"|"cancelled"|null; taskError:string|null };
 export type CeoPlan = { id:string; ceoAgentId:string; taskId:string; title:string; objective:string; additionalContext:string|null; businessProfileSnapshot:CeoBusinessProfileSnapshot|null; businessProfileSnapshotAt:string|null; contextVersion:string|null; structuredPlan:CeoStructuredPlan|null; structuredPlanVersion:string|null; generationSettings:CeoGenerationSettings|null; executionSource:CeoExecutionSourceSnapshot|null; approvalStatus:"pending"|"approved"|"rejected"; decisionNote:string|null; decidedAt:string|null; retryOfPlanId:string|null; retryPlanId:string|null; retryStartedAt:string|null; retryCount:number; taskStatus:"queued"|"running"|"completed"|"failed"|"cancelled"|null; createdAt:string; updatedAt:string };
 
 /** Removes UI-only and unsupported fields before the request reaches Nest DTO validation. */
@@ -31,6 +31,6 @@ export const ceoPlanningApi = {
   retry: (id:string) => apiFetch<CeoPlan>(`/ceo-plans/${encodeURIComponent(id)}/retry`, { method:"POST" }),
   decide: (id:string, input:{decision:"approved"|"rejected";note?:string}) => apiFetch<CeoPlan>(`/ceo-plans/${encodeURIComponent(id)}/decision`, { method:"POST", body:JSON.stringify(input) }),
   listReviews: (id:string) => apiFetch<StrategicReview[]>(`/ceo-plans/${encodeURIComponent(id)}/reviews`),
-  createReview: (id:string, input:{providerConnectionId:string;modelId:string}) => apiFetch<StrategicReview>(`/ceo-plans/${encodeURIComponent(id)}/reviews`, { method:"POST", body:JSON.stringify(input) }),
+  createReview: (id:string, input:{reviewerAgentId:string}) => apiFetch<StrategicReview>(`/ceo-plans/${encodeURIComponent(id)}/reviews`, { method:"POST", body:JSON.stringify(input) }),
   remove: (id:string) => apiFetch<{deleted:true}>(`/ceo-plans/${encodeURIComponent(id)}`, { method:"DELETE" }),
 };

@@ -50,6 +50,7 @@ interface Props {
   onOpenChange: (open: boolean) => void;
   agent: AiAgent | null;
   departments: Department[];
+  preset?: Partial<Pick<Form, "name" | "role" | "description" | "systemPrompt" | "enabledTools">> | null;
   onSaved: () => Promise<void>;
 }
 
@@ -89,6 +90,7 @@ export function AgentFormDialog({
   onOpenChange,
   agent,
   departments,
+  preset,
   onSaved,
 }: Props) {
   const { t, language } = useUiLanguage();
@@ -117,7 +119,7 @@ export function AgentFormDialog({
             status: agent.status,
             enabledTools: agent.toolConfig.enabledTools,
           }
-        : { ...empty },
+        : { ...empty, ...preset, enabledTools: preset?.enabledTools ?? [] },
     );
 
     let alive = true;
@@ -138,7 +140,7 @@ export function AgentFormDialog({
     return () => {
       alive = false;
     };
-  }, [open, agent, t.failed]);
+  }, [open, agent, preset, t.failed]);
 
   const selectedConnection = connections.find(
     (item) => item.id === form.connectionId,
@@ -153,14 +155,16 @@ export function AgentFormDialog({
       [key]: value,
     }));
 
-  const hasWebResearch = form.enabledTools.includes("web_research");
+  function hasCapability(capability: string) {
+    return form.enabledTools.includes(capability);
+  }
 
-  function toggleWebResearch(enabled: boolean) {
+  function toggleCapability(capability: string, enabled: boolean) {
     setForm((current) => ({
       ...current,
       enabledTools: enabled
-        ? [...new Set([...current.enabledTools, "web_research"])]
-        : current.enabledTools.filter((tool) => tool !== "web_research"),
+        ? [...new Set([...current.enabledTools, capability])]
+        : current.enabledTools.filter((tool) => tool !== capability),
     }));
   }
 
@@ -419,8 +423,12 @@ export function AgentFormDialog({
                 <p className="mt-1 text-xs text-muted-foreground">Chọn các công cụ nhân viên được phép sử dụng khi thực hiện công việc.</p>
               </div>
               <label className="flex cursor-pointer items-start gap-3 rounded-md border bg-background p-3">
-                <Checkbox checked={hasWebResearch} onCheckedChange={(checked) => toggleWebResearch(checked === true)} aria-label="Nghiên cứu Internet" />
+                <Checkbox checked={hasCapability("web_research")} onCheckedChange={(checked) => toggleCapability("web_research", checked === true)} aria-label="Nghiên cứu Internet" />
                 <span><span className="block font-medium">Nghiên cứu Internet</span><span className="mt-1 block text-xs text-muted-foreground">Cho phép nhân viên tìm nguồn công khai khi mô hình nhận thấy nhiệm vụ cần thông tin mới.</span></span>
+              </label>
+              <label className="flex cursor-pointer items-start gap-3 rounded-md border bg-background p-3">
+                <Checkbox checked={hasCapability("strategic_review")} onCheckedChange={(checked) => toggleCapability("strategic_review", checked === true)} aria-label="Phản biện chiến lược" />
+                <span><span className="block font-medium">Phản biện chiến lược</span><span className="mt-1 block text-xs text-muted-foreground">Cho phép nhân viên đóng vai Cố vấn chiến lược, đánh giá kế hoạch CEO theo tiêu chí có cấu trúc.</span></span>
               </label>
             </section>
 

@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, isNull, inArray, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
-import { aiProviderConnections, aiTasks, ceoPlanReviews, ceoPlans, db } from "@workspace/db/node";
+import { aiAgents, aiTasks, ceoPlanReviews, ceoPlans, db } from "@workspace/db/node";
 import type { RequestContext } from "../auth/request-context.js";
 import { TasksService } from "../tasks/tasks.service.js";
 import type { CreateCeoPlanDto, CreateStrategicReviewDto, DecideCeoPlanDto } from "./ceo-planning.dto.js";
@@ -75,14 +75,45 @@ export class CeoPlanningService {
     const [sourceTask] = await db.select({ status: aiTasks.status, result: aiTasks.result }).from(aiTasks).where(and(eq(aiTasks.id, plan.taskId), eq(aiTasks.organizationId, ctx.organizationId))).limit(1);
     const planError = ceoPlanApprovalError(sourceTask, plan.structuredPlan);
     if (planError) throw new BadRequestException(`Chỉ đánh giá kế hoạch hợp lệ đã hoàn tất: ${planError}`);
-    const [connection] = await db.select({ id: aiProviderConnections.id, provider: aiProviderConnections.provider }).from(aiProviderConnections).where(and(eq(aiProviderConnections.id, dto.providerConnectionId), eq(aiProviderConnections.organizationId, ctx.organizationId), eq(aiProviderConnections.enabled, true))).limit(1);
-    if (!connection) throw new BadRequestException("Kết nối AI Reviewer không khả dụng.");
-    if (connection.provider !== "google") throw new BadRequestException("Strategic Reviewer MVP yêu cầu connection Gemini (Google AI Studio).");
-    const task = await this.tasks.create(ctx, { title: `Đánh giá chiến lược: ${plan.title}`, description: this.reviewerPrompt(plan) }, { enqueue: false, webResearchEnabled: false, runtime: { connectionId: connection.id, modelId: dto.modelId.trim() } });
-    const [review] = await db.insert(ceoPlanReviews).values({ id: randomUUID(), organizationId: ctx.organizationId, planId: plan.id, taskId: task.id, createdBy: ctx.userId, providerConnectionId: connection.id, modelId: dto.modelId.trim(), planVersion: plan.structuredPlanVersion }).returning();
-    if (!review) throw new Error("Không thể lưu yêu cầu đánh giá chiến lược.");
-    await this.tasks.enqueue(task);
-    return review;
+    const [advisor] = await db.select().from(aiAgents).where(and(eq(aiAgents.id, dto.reviewerAgentId), eq(aiAgents.organizationId, ctx.organizationId))).limit(1);
+    if (!advisor) throw new BadRequestException("Nhân viên Cố vấn không thuộc Organization hiện tại.");
+    if (advisor.status !== "active") throw new BadRequestException("Nhân viên Cố vấn phải ở trạng thái đang hoạt động.");
+    if (!advisor.connectionId || !advisor.modelId) throw new BadRequestException("Nhân viên Cố vấn chưa có cấu hình AI đầy đủ.");
+    if (!advisor.toolConfig.enabledTools.includes("strategic_review")) throw new BadRequestException("Nhân viên này chưa được cấp kỹ năng Phản biện chiến lược.");
+    const reviewerConnectionId = advisor.connectionId;
+    const reviewerModelId = advisor.modelId;
+
+    // A transaction-scoped advisory lock prevents two browser tabs/API instances
+    // from creating concurrent reviews for the same plan.
+    const persisted = await db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`ceo-review:${ctx.organizationId}:${plan.id}`}))`);
+      const active = await tx.select({ id: ceoPlanReviews.id }).from(ceoPlanReviews)
+        .innerJoin(aiTasks, and(eq(aiTasks.id, ceoPlanReviews.taskId), eq(aiTasks.organizationId, ceoPlanReviews.organizationId)))
+        .where(and(eq(ceoPlanReviews.organizationId, ctx.organizationId), eq(ceoPlanReviews.planId, plan.id), inArray(aiTasks.status, ["queued", "running"]))).limit(1);
+      if (active.length) throw new BadRequestException("Một lượt phản biện cho kế hoạch này đang được xử lý.");
+
+      const task = await this.tasks.create(ctx, { title: `Đánh giá chiến lược: ${plan.title}`, description: this.reviewerPrompt(plan), agentId: advisor.id }, { enqueue: false, webResearchEnabled: false });
+      try {
+        // TasksService owns its own DB unit of work. Persist the review through
+        // the same shared client while the advisory transaction keeps competing
+        // requests serialized for this plan.
+        const reviewValues: typeof ceoPlanReviews.$inferInsert = {
+          id: randomUUID(), organizationId: ctx.organizationId, planId: plan.id, taskId: task.id, createdBy: ctx.userId,
+          reviewerAgentId: advisor.id, reviewerAgentName: advisor.name, reviewerAgentRole: advisor.role,
+          providerConnectionId: reviewerConnectionId, modelId: reviewerModelId, planVersion: plan.structuredPlanVersion,
+        };
+        const [review] = await db.insert(ceoPlanReviews).values(reviewValues).returning();
+        if (!review) throw new Error("Không thể lưu yêu cầu đánh giá chiến lược.");
+        return { review, task };
+      } catch (error) {
+        await this.tasks.discardUnqueued(task);
+        throw error;
+      }
+    });
+    // Enqueue only after the review row commits; otherwise a fast Worker could
+    // see the task without its corresponding review record.
+    await this.tasks.enqueue(persisted.task);
+    return persisted.review;
   }
   async retry(ctx: RequestContext, id: string) {
     const plan = await this.get(ctx, id);

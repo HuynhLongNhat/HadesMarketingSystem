@@ -19,6 +19,7 @@ import {
   Pencil,
   RefreshCw,
   Search,
+  ShieldCheck,
   Trash2,
   Users,
 } from "lucide-react";
@@ -69,6 +70,14 @@ const categories: Record<AgentCategory, string> = {
   other: "Khác",
 };
 
+const strategicAdvisorPreset = {
+  name: "Cố vấn chiến lược",
+  role: "Strategic Advisor",
+  description: "Đánh giá độc lập kế hoạch CEO, chỉ ra rủi ro và đề xuất cải thiện trước khi chủ doanh nghiệp quyết định.",
+  systemPrompt: "Bạn là Cố vấn chiến lược độc lập. Đánh giá kế hoạch dựa trên dữ liệu doanh nghiệp đã cung cấp; phân biệt dữ kiện, giả định và nhận định. Không tự phê duyệt hoặc thực thi công việc. Tuân thủ chặt chẽ cấu trúc đầu ra được giao.",
+  enabledTools: ["strategic_review"],
+};
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Vui lòng thử lại.";
 }
@@ -98,6 +107,7 @@ export default function WorkforcePage() {
 
   const [agentDialogOpen, setAgentDialogOpen] = useState(false);
   const [editingAgent, setEditingAgent] = useState<AiAgent | null>(null);
+  const [agentPreset, setAgentPreset] = useState<typeof strategicAdvisorPreset | null>(null);
   const [deleteAgentTarget, setDeleteAgentTarget] = useState<AiAgent | null>(
     null,
   );
@@ -210,6 +220,13 @@ export default function WorkforcePage() {
 
   function openCreateAgent() {
     setEditingAgent(null);
+    setAgentPreset(null);
+    setAgentDialogOpen(true);
+  }
+
+  function openStrategicAdvisor() {
+    setEditingAgent(null);
+    setAgentPreset(strategicAdvisorPreset);
     setAgentDialogOpen(true);
   }
 
@@ -445,6 +462,7 @@ export default function WorkforcePage() {
                 ? "Tạo phòng ban"
                 : "Tạo nhân viên"}
           </Button>
+          {tab === "agents" && <Button type="button" variant="outline" onClick={openStrategicAdvisor}><ShieldCheck className="size-4" />Tạo Cố vấn chiến lược</Button>}
         </div>
       </header>
 
@@ -788,6 +806,7 @@ export default function WorkforcePage() {
         onOpenChange={setAgentDialogOpen}
         agent={editingAgent}
         departments={departments}
+        preset={agentPreset}
         onSaved={refresh}
       />
 

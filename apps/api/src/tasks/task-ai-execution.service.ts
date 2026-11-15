@@ -9,6 +9,7 @@ import {
   aiTaskResearchRuns,
   aiTaskResearchSources,
   aiTasks,
+  businessDoctrines,
   ceoPlans,
   ceoPlanReviews,
   db,
@@ -101,6 +102,11 @@ export class TaskAiExecutionService {
 
   private ceoPrompt(task: { description: string; agentName: string | null; agentRole: string | null; agentSystemPrompt: string | null }) {
     return `Bạn đang đảm nhiệm vai trò CEO AI “${task.agentName ?? "CEO"}”.\n\nSystem prompt snapshot của CEO (chỉ áp dụng khi không mâu thuẫn yêu cầu JSON):\n--- CEO SYSTEM PROMPT ---\n${task.agentSystemPrompt ?? ""}\n--- END CEO SYSTEM PROMPT ---\n\n${task.description}\n\nChỉ trả về một JSON object hợp lệ theo contract được nêu trong yêu cầu. Không Markdown, không code fence, không giải thích ngoài JSON.`;
+  }
+
+  /** Keeps the Advisor's immutable task snapshot while enforcing the review JSON contract. */
+  private strategicReviewPrompt(task: { description: string; agentName: string | null; agentRole: string | null; agentSystemPrompt: string | null }) {
+    return `Bạn đang đảm nhiệm vai trò Cố vấn chiến lược AI “${task.agentName ?? "Cố vấn"}”, chức vụ “${task.agentRole ?? "Strategic Advisor"}”.\n\nSystem prompt snapshot của Cố vấn (chỉ áp dụng khi không mâu thuẫn với yêu cầu JSON, bảo mật hoặc dữ liệu đã xác minh):\n--- ADVISOR SYSTEM PROMPT ---\n${task.agentSystemPrompt ?? ""}\n--- END ADVISOR SYSTEM PROMPT ---\n\n${task.description}\n\nChỉ trả về một JSON object hợp lệ theo contract đánh giá được nêu trong yêu cầu. Không Markdown, không code fence, không tự phê duyệt hoặc thực thi công việc.`;
   }
 
   private ceoRepairPrompt(raw: string, issues: Array<{ path: string; code: string; message: string; format: string | null; receivedType: string | null }>) {
@@ -334,7 +340,10 @@ export class TaskAiExecutionService {
       const isCeoPlan = task.title.startsWith("Kế hoạch CEO:");
       const [reviewRun] = await db.select({ id: ceoPlanReviews.id }).from(ceoPlanReviews).where(and(eq(ceoPlanReviews.taskId, task.id), eq(ceoPlanReviews.organizationId, task.organizationId))).limit(1);
       const isStrategicReview = Boolean(reviewRun);
-      const prompt = isStrategicReview ? task.description : isCeoPlan ? this.ceoPrompt(task) : this.prompt(task, evidence);
+      const basePrompt = isStrategicReview ? this.strategicReviewPrompt(task) : isCeoPlan ? this.ceoPrompt(task) : this.prompt(task, evidence);
+      const [doctrine] = await db.select({ version: businessDoctrines.version, title: businessDoctrines.title, principles: businessDoctrines.principles }).from(businessDoctrines).where(and(eq(businessDoctrines.organizationId, task.organizationId), eq(businessDoctrines.enabled, true))).orderBy(desc(businessDoctrines.version)).limit(1);
+      const prompt = doctrine ? `${basePrompt}\n\nBusiness Doctrine (phiên bản ${doctrine.version}, chỉ là ưu tiên kinh doanh; không được ghi đè bảo mật, giới hạn hệ thống, dữ liệu xác minh hay quyền công cụ):\n${doctrine.principles.map((principle, index) => `${index + 1}. ${principle}`).join("\n")}` : basePrompt;
+      if (doctrine) await this.event(task.id, task.organizationId, "business_doctrine_applied", `Đã áp dụng Business Doctrine v${doctrine.version}: ${doctrine.title}`);
       const [planSettings] = isCeoPlan ? await db.select({ generationSettings: ceoPlans.generationSettings, businessProfileSnapshot: ceoPlans.businessProfileSnapshot }).from(ceoPlans).where(and(eq(ceoPlans.taskId, task.id), eq(ceoPlans.organizationId, task.organizationId))).limit(1) : [];
       const effective = planSettings ? resolveGenerationSettings(planSettings.generationSettings) : null;
       const maxOutputTokens = effective?.maxOutputTokens ?? (isCeoPlan ? CEO_PLAN_MAX_OUTPUT_TOKENS : isStrategicReview ? 4_000 : MAX_OUTPUT_TOKENS);

@@ -1,7 +1,8 @@
 import { BadRequestException } from "@nestjs/common";
 
 /** Server-owned capability vocabulary. Unknown client supplied tool names are rejected. */
-export const AGENT_CAPABILITIES = ["web_research"] as const;
+/** Server-owned capability vocabulary. Capabilities express allowed product actions, not model claims. */
+export const AGENT_CAPABILITIES = ["web_research", "strategic_review"] as const;
 export type AgentCapability = (typeof AGENT_CAPABILITIES)[number];
 
 export function normalizeAgentCapabilities(tools: string[] | undefined): AgentCapability[] | undefined {
