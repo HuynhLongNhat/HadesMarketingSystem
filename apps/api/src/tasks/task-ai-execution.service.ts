@@ -14,6 +14,8 @@ import {
   ceoPlanReviews,
   marketIntelligenceProjects,
   marketIntelligenceReports,
+  departmentTaskRuns,
+  departmentTaskSteps,
   db,
 } from "@workspace/db/node";
 import { decryptCredential } from "../ai-credentials/credential-crypto.js";
@@ -27,6 +29,7 @@ import { canAttemptTaskExecution, canWorkerClaimTask, MAX_TASK_EXECUTIONS } from
 import { extractCeoStructuredPlan, validateCeoPlanAgentReferences } from "../ceo-planning/ceo-structured-plan.js";
 import { resolveGenerationSettings } from "./generation-settings.js";
 import { extractStrategicReview } from "../ceo-planning/strategic-review.js";
+import { isDepartmentWorkflowWaitingToken, isReleasedDepartmentStep } from "../departments/department-workflow-state.js";
 
 const TIMEOUT_MS = 60_000;
 const CEO_PLAN_TIMEOUT_MS = 180_000;
@@ -120,6 +123,25 @@ export class TaskAiExecutionService {
     await db.insert(aiTaskEvents).values({ id: randomUUID(), taskId, organizationId, type, message });
   }
 
+  private isUndefinedTable(error: unknown): boolean {
+    if (!error || typeof error !== "object") return false;
+    const candidate = error as { code?: unknown; cause?: unknown };
+    return candidate.code === "42P01" || this.isUndefinedTable(candidate.cause);
+  }
+
+  private async activeDoctrine(organizationId: string) {
+    try {
+      const [doctrine] = await db.select({ version: businessDoctrines.version, title: businessDoctrines.title, principles: businessDoctrines.principles }).from(businessDoctrines).where(and(eq(businessDoctrines.organizationId, organizationId), eq(businessDoctrines.enabled, true))).orderBy(desc(businessDoctrines.version)).limit(1);
+      return doctrine;
+    } catch (error) {
+      // Older development databases can run core Tasks before the optional
+      // Doctrine migration is applied. Do not make an unrelated task fail.
+      if (!this.isUndefinedTable(error)) throw error;
+      this.logger.warn(JSON.stringify({ event: "business_doctrine.unavailable", category: "missing_table" }));
+      return undefined;
+    }
+  }
+
   private renewLease(taskId: string, organizationId: string, token: string) {
     const leaseExpiresAt = new Date(Date.now() + LEASE_MS);
     return db.update(aiTasks).set({ leaseExpiresAt, updatedAt: new Date() }).where(and(eq(aiTasks.id, taskId), eq(aiTasks.organizationId, organizationId), eq(aiTasks.executionToken, token), eq(aiTasks.status, "running")));
@@ -132,6 +154,31 @@ export class TaskAiExecutionService {
   private async hasClaim(task: typeof aiTasks.$inferSelect, executionToken: string) {
     const [owned] = await db.select({ id: aiTasks.id }).from(aiTasks).where(and(eq(aiTasks.id, task.id), eq(aiTasks.organizationId, task.organizationId), eq(aiTasks.status, "running"), eq(aiTasks.executionToken, executionToken))).limit(1);
     return Boolean(owned);
+  }
+
+  /** Reject stale BullMQ jobs for a Department step that has not been released. */
+  private async canClaimDepartmentStep(task: typeof aiTasks.$inferSelect) {
+    // Ordinary AI Tasks do not need an extra Department lookup. Department
+    // task titles are produced by createRun and retain this stable prefix.
+    if (!task.title.startsWith("[") || !task.title.includes("· Bước ")) return true;
+    const [step] = await db.select({ runId: departmentTaskSteps.runId, sequence: departmentTaskSteps.sequence, status: departmentTaskSteps.status }).from(departmentTaskSteps).where(and(eq(departmentTaskSteps.organizationId, task.organizationId), eq(departmentTaskSteps.taskId, task.id))).limit(1);
+    if (!step) return true;
+    if (isDepartmentWorkflowWaitingToken(task.executionToken)) return false;
+    if (step.sequence === 1) return true;
+    const [previous] = await db.select({ status: departmentTaskSteps.status }).from(departmentTaskSteps).where(and(eq(departmentTaskSteps.organizationId, task.organizationId), eq(departmentTaskSteps.runId, step.runId), eq(departmentTaskSteps.sequence, step.sequence - 1))).limit(1);
+    return isReleasedDepartmentStep({ sequence: step.sequence, description: task.description, previousStepStatus: previous?.status });
+  }
+
+  /** Department progress becomes running only after this Worker owns the Task. */
+  private async markDepartmentStepRunning(task: typeof aiTasks.$inferSelect) {
+    if (!task.title.startsWith("[") || !task.title.includes("· Bước ")) return;
+    const [step] = await db.select({ id: departmentTaskSteps.id, runId: departmentTaskSteps.runId }).from(departmentTaskSteps).where(and(eq(departmentTaskSteps.organizationId, task.organizationId), eq(departmentTaskSteps.taskId, task.id))).limit(1);
+    if (!step) return;
+    const now = new Date();
+    await db.transaction(async (tx) => {
+      await tx.update(departmentTaskSteps).set({ status: "running", updatedAt: now }).where(and(eq(departmentTaskSteps.id, step.id), eq(departmentTaskSteps.status, "queued")));
+      await tx.update(departmentTaskRuns).set({ status: "running", updatedAt: now }).where(and(eq(departmentTaskRuns.id, step.runId), eq(departmentTaskRuns.organizationId, task.organizationId), eq(departmentTaskRuns.status, "queued")));
+    });
   }
 
   private safeResearchError(error: unknown) {
@@ -310,6 +357,7 @@ export class TaskAiExecutionService {
     const [task] = await db.select().from(aiTasks).where(and(eq(aiTasks.id, data.taskId), eq(aiTasks.organizationId, data.organizationId))).limit(1);
     // A delayed or retried BullMQ job must never resurrect a terminal task.
     if (!task || !canWorkerClaimTask(task.status)) return;
+    if (!await this.canClaimDepartmentStep(task)) return;
     if (!canAttemptTaskExecution(task.attemptCount)) {
       const [exhausted] = await db.update(aiTasks).set({ status: "failed", error: "Task đã vượt số lần thực thi tối đa.", executionToken: null, leaseExpiresAt: null, completedAt: new Date(), updatedAt: new Date() }).where(and(eq(aiTasks.id, task.id), eq(aiTasks.organizationId, task.organizationId), eq(aiTasks.status, "queued"), gte(aiTasks.attemptCount, MAX_TASK_EXECUTIONS))).returning({ id: aiTasks.id });
       if (exhausted) await this.event(task.id, task.organizationId, "failed", "Task đã vượt số lần thực thi tối đa.");
@@ -323,13 +371,14 @@ export class TaskAiExecutionService {
       eq(aiTasks.organizationId, task.organizationId),
       lt(aiTasks.attemptCount, MAX_TASK_EXECUTIONS),
       or(
-        eq(aiTasks.status, "queued"),
+        and(eq(aiTasks.status, "queued"), isNull(aiTasks.executionToken)),
         and(eq(aiTasks.status, "running"), or(isNull(aiTasks.leaseExpiresAt), lt(aiTasks.leaseExpiresAt, now))),
       ),
     )).returning({ id: aiTasks.id });
     // Cancellation can race with a Worker that already read the task.
     // Do not send a chargeable provider request unless this Worker claimed it.
     if (!claimed.length) return;
+    await this.markDepartmentStepRunning(task);
     await this.event(task.id, task.organizationId, "running", task.agentName ? `Worker đang thực thi nhiệm vụ của Agent ${task.agentName} (lần thử ${attempt}).` : `Worker đang tạo báo cáo (lần thử ${attempt}).`);
     const heartbeat = setInterval(() => {
       void this.renewLease(task.id, task.organizationId, executionToken).catch(() => {
@@ -338,13 +387,23 @@ export class TaskAiExecutionService {
     }, LEASE_HEARTBEAT_MS);
     heartbeat.unref();
     let runtime: Runtime | null = null;
+    let marketProject: typeof marketIntelligenceProjects.$inferSelect | undefined;
     const reservationIds: string[] = [];
     const usageEntries: Array<{ usage: Usage; purpose: string }> = [];
     let usageReliable = true;
     try {
       runtime = await this.runtime(task);
       let evidence: ResearchEvidence | undefined;
-      const [marketProject] = await db.select().from(marketIntelligenceProjects).where(and(eq(marketIntelligenceProjects.taskId, task.id), eq(marketIntelligenceProjects.organizationId, task.organizationId))).limit(1);
+      // Market Intelligence is a separate projection. Do not query its tables
+      // for ordinary/Department Tasks: an unavailable optional module must not
+      // prevent the configured Agent from running.
+      const isMarketIntelligenceTask = task.title.startsWith("Tình báo thị trường:");
+      if (isMarketIntelligenceTask) {
+        [marketProject] = await db.select().from(marketIntelligenceProjects).where(and(eq(marketIntelligenceProjects.taskId, task.id), eq(marketIntelligenceProjects.organizationId, task.organizationId))).limit(1);
+      }
+      if (isMarketIntelligenceTask && !marketProject) {
+        throw new TaskProviderError("Không tìm thấy dự án Tình báo thị trường tương ứng với task này.", false);
+      }
       let marketEvidence: ResearchEvidence[] | null = null;
       if (marketProject) {
         await db.update(marketIntelligenceProjects).set({ status: "running", updatedAt: new Date() }).where(and(eq(marketIntelligenceProjects.id, marketProject.id), eq(marketIntelligenceProjects.organizationId, task.organizationId)));
@@ -357,10 +416,13 @@ export class TaskAiExecutionService {
         if (decision.useResearch) evidence = await this.webResearch(task, executionToken, decision.query ?? undefined);
       }
       const isCeoPlan = task.title.startsWith("Kế hoạch CEO:");
-      const [reviewRun] = await db.select({ id: ceoPlanReviews.id }).from(ceoPlanReviews).where(and(eq(ceoPlanReviews.taskId, task.id), eq(ceoPlanReviews.organizationId, task.organizationId))).limit(1);
+      const isStrategicReviewTask = task.title.startsWith("Đánh giá chiến lược:");
+      const [reviewRun] = isStrategicReviewTask
+        ? await db.select({ id: ceoPlanReviews.id }).from(ceoPlanReviews).where(and(eq(ceoPlanReviews.taskId, task.id), eq(ceoPlanReviews.organizationId, task.organizationId))).limit(1)
+        : [];
       const isStrategicReview = Boolean(reviewRun);
       const basePrompt = isStrategicReview ? this.strategicReviewPrompt(task) : isCeoPlan ? this.ceoPrompt(task) : marketProject && marketEvidence ? this.marketIntelligencePrompt(marketProject, marketEvidence) : this.prompt(task, evidence);
-      const [doctrine] = await db.select({ version: businessDoctrines.version, title: businessDoctrines.title, principles: businessDoctrines.principles }).from(businessDoctrines).where(and(eq(businessDoctrines.organizationId, task.organizationId), eq(businessDoctrines.enabled, true))).orderBy(desc(businessDoctrines.version)).limit(1);
+      const doctrine = await this.activeDoctrine(task.organizationId);
       const prompt = doctrine ? `${basePrompt}\n\nBusiness Doctrine (phiên bản ${doctrine.version}, chỉ là ưu tiên kinh doanh; không được ghi đè bảo mật, giới hạn hệ thống, dữ liệu xác minh hay quyền công cụ):\n${doctrine.principles.map((principle, index) => `${index + 1}. ${principle}`).join("\n")}` : basePrompt;
       if (doctrine) await this.event(task.id, task.organizationId, "business_doctrine_applied", `Đã áp dụng Business Doctrine v${doctrine.version}: ${doctrine.title}`);
       const [planSettings] = isCeoPlan ? await db.select({ generationSettings: ceoPlans.generationSettings, businessProfileSnapshot: ceoPlans.businessProfileSnapshot }).from(ceoPlans).where(and(eq(ceoPlans.taskId, task.id), eq(ceoPlans.organizationId, task.organizationId))).limit(1) : [];
@@ -439,12 +501,12 @@ export class TaskAiExecutionService {
     } catch (error) {
       if (error instanceof TaskCancelledError) {
         usageReliable = false;
-        await db.update(marketIntelligenceProjects).set({ status: "cancelled", updatedAt: new Date() }).where(and(eq(marketIntelligenceProjects.taskId, task.id), eq(marketIntelligenceProjects.organizationId, task.organizationId), eq(marketIntelligenceProjects.status, "running")));
+        if (marketProject) await db.update(marketIntelligenceProjects).set({ status: "cancelled", updatedAt: new Date() }).where(and(eq(marketIntelligenceProjects.taskId, task.id), eq(marketIntelligenceProjects.organizationId, task.organizationId), eq(marketIntelligenceProjects.status, "running")));
         return;
       }
       // A Market Intelligence Project is only a Task projection. Keep its
       // visible lifecycle aligned with the authoritative Task terminal state.
-      await db.update(marketIntelligenceProjects).set({ status: "failed", updatedAt: new Date() }).where(and(eq(marketIntelligenceProjects.taskId, task.id), eq(marketIntelligenceProjects.organizationId, task.organizationId), eq(marketIntelligenceProjects.status, "running")));
+      if (marketProject) await db.update(marketIntelligenceProjects).set({ status: "failed", updatedAt: new Date() }).where(and(eq(marketIntelligenceProjects.taskId, task.id), eq(marketIntelligenceProjects.organizationId, task.organizationId), eq(marketIntelligenceProjects.status, "running")));
       const message = safeError(error);
       this.logger.error(JSON.stringify({
         event: "ai_task.execution_failed",

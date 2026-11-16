@@ -148,7 +148,13 @@ export const workforceApi = {
     );
   },
   getDepartment(id: string) { return apiFetch<Department & { members: AiAgent[]; runs: Array<{id:string;title:string;status:string;updatedAt:string}> }>(`/departments/${encodeURIComponent(id)}`); },
-  createDepartmentRun(id: string, input: { title:string; input:string }) { return apiFetch(`/departments/${encodeURIComponent(id)}/runs`, { method:"POST", body:JSON.stringify(input) }); },
+  getDepartmentRun(id: string, runId: string) { return apiFetch<{id:string;title:string;input:string;status:string;createdAt:string;updatedAt:string;completedAt:string|null;finalReport:string|null;steps:Array<{id:string;sequence:number;agentName:string|null;role:string;status:"queued"|"running"|"completed"|"failed"|"cancelled";input:string;output:string|null;error:string|null;startedAt:string|null;taskCompletedAt:string|null;updatedAt:string;attemptCount:number;leaseExpiresAt:string|null;lastEvent:{type:string;message:string;createdAt:string}|null}>}>(`/departments/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}`); },
+  createDepartmentRun(id: string, input: { title:string; input:string }) {
+    return apiFetch<{ id: string }>(`/departments/${encodeURIComponent(id)}/runs`, {
+      method:"POST",
+      body:JSON.stringify(input),
+    });
+  },
 
   listAgents() {
     return apiFetch<AiAgent[]>("/agents");

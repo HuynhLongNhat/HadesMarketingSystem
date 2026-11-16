@@ -40,6 +40,10 @@ export class DepartmentsController {
     return this.departmentsService.list(context);
   }
 
+  @Get(":id/runs/:runId")
+  @RequirePermissions(PERMISSIONS.DEPARTMENT_READ)
+  getRun(@CurrentContext() context: RequestContext, @Param("id") id: string, @Param("runId") runId: string) { return this.departmentsService.getRun(context, id, runId); }
+
   @Get(":id")
   @RequirePermissions(PERMISSIONS.DEPARTMENT_READ)
   @ApiOperation({ summary: "Get department by ID" })

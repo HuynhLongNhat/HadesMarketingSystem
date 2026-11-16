@@ -1,10 +1,11 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { and, desc, eq, isNull, lt, or } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
-import { aiAgents, aiModelDefaults, aiProviderConnections, aiTaskEvents, aiTaskReportCitations, aiTaskResearchRuns, aiTaskResearchSources, aiTasks, db } from "@workspace/db/node";
+import { aiAgents, aiModelDefaults, aiProviderConnections, aiTaskEvents, aiTaskReportCitations, aiTaskResearchRuns, aiTaskResearchSources, aiTasks, db, departmentTaskSteps } from "@workspace/db/node";
 import type { RequestContext } from "../auth/request-context.js";
 import { JobsService } from "../jobs/jobs.service.js";
 import type { CreateTaskDto } from "./tasks.dto.js";
+import { isDepartmentWorkflowWaitingToken, isReleasedDepartmentStep } from "../departments/department-workflow-state.js";
 
 const QUEUE_CLAIM_TIMEOUT_MS = 120_000;
 
@@ -17,7 +18,7 @@ export class TasksService {
     await db.insert(aiTaskEvents).values({ id: randomUUID(), taskId, organizationId, type, message });
   }
 
-  async create(ctx: RequestContext, dto: CreateTaskDto, options: { enqueue?: boolean; webResearchEnabled?: boolean; runtime?: { connectionId: string; modelId: string } } = {}) {
+  async create(ctx: RequestContext, dto: CreateTaskDto, options: { enqueue?: boolean; webResearchEnabled?: boolean; runtime?: { connectionId: string; modelId: string }; deferredExecutionToken?: string } = {}) {
     const title = dto.title.trim(), description = dto.description.trim();
     if (!title || !description) throw new BadRequestException("Task title and description are required");
     // New Agent tasks let the configured model decide at execution time whether
@@ -49,7 +50,7 @@ export class TasksService {
       modelId = model.modelId;
     }
     const id = randomUUID();
-    const [task] = await db.insert(aiTasks).values({ id, organizationId: ctx.organizationId, createdBy: ctx.userId, title, description, connectionId, modelId, ...agentSnapshot, webResearchEnabled, researchProvider: webResearchEnabled ? "tavily" : null, researchPolicyVersion: webResearchEnabled ? "v1" : null, leaseExpiresAt: this.queueLeaseExpiresAt() }).returning();
+    const [task] = await db.insert(aiTasks).values({ id, organizationId: ctx.organizationId, createdBy: ctx.userId, title, description, connectionId, modelId, ...agentSnapshot, webResearchEnabled, researchProvider: webResearchEnabled ? "tavily" : null, researchPolicyVersion: webResearchEnabled ? "v1" : null, executionToken: options.deferredExecutionToken ?? null, leaseExpiresAt: options.deferredExecutionToken ? null : this.queueLeaseExpiresAt() }).returning();
     await this.event(id, ctx.organizationId, "queued", webResearchEnabled ? `Task đang chờ Worker xử lý bởi Agent ${agentSnapshot.agentName}; Agent sẽ tự quyết định có cần Web Research.` : "Task đang chờ Worker xử lý.");
     if (options.enqueue !== false) await this.enqueue(task);
     return task;
@@ -71,13 +72,27 @@ export class TasksService {
   }
 
   /** Recover only expired leases; a live Worker renews its lease while generating. */
-  private async recoverExpiredTasks(organizationId: string) {
+  private async canRecoverTask(task: { id: string; organizationId: string; executionToken: string | null; description: string }) {
+    if (isDepartmentWorkflowWaitingToken(task.executionToken)) return false;
+    const [step] = await db.select({ runId: departmentTaskSteps.runId, sequence: departmentTaskSteps.sequence }).from(departmentTaskSteps).where(and(eq(departmentTaskSteps.organizationId, task.organizationId), eq(departmentTaskSteps.taskId, task.id))).limit(1);
+    if (!step || step.sequence === 1) return true;
+    const [previous] = await db.select({ status: departmentTaskSteps.status }).from(departmentTaskSteps).where(and(eq(departmentTaskSteps.organizationId, task.organizationId), eq(departmentTaskSteps.runId, step.runId), eq(departmentTaskSteps.sequence, step.sequence - 1))).limit(1);
+    return isReleasedDepartmentStep({ sequence: step.sequence, description: task.description, previousStepStatus: previous?.status });
+  }
+
+  async recoverExpiredTasks(organizationId: string) {
     const now = new Date(), nextQueueLease = this.queueLeaseExpiresAt();
-    const expired = and(eq(aiTasks.organizationId, organizationId), or(isNull(aiTasks.leaseExpiresAt), lt(aiTasks.leaseExpiresAt, now)));
-    const recoveredRunning = await db.update(aiTasks).set({ status: "queued", executionToken: null, leaseExpiresAt: nextQueueLease, updatedAt: now }).where(and(eq(aiTasks.status, "running"), expired)).returning({ id: aiTasks.id });
-    const recoveredQueued = await db.update(aiTasks).set({ leaseExpiresAt: nextQueueLease, updatedAt: now }).where(and(eq(aiTasks.status, "queued"), expired)).returning({ id: aiTasks.id });
-    for (const task of [...recoveredRunning, ...recoveredQueued]) {
-      const wasRunning = recoveredRunning.some((item) => item.id === task.id);
+    const candidates = await db.select({ id: aiTasks.id, organizationId: aiTasks.organizationId, status: aiTasks.status, executionToken: aiTasks.executionToken, description: aiTasks.description }).from(aiTasks).where(and(eq(aiTasks.organizationId, organizationId), or(eq(aiTasks.status, "running"), eq(aiTasks.status, "queued")), or(isNull(aiTasks.leaseExpiresAt), lt(aiTasks.leaseExpiresAt, now))));
+    for (const candidate of candidates) {
+      // Later Department steps are intentionally queued but not runnable. They
+      // must never be mistaken for abandoned work by dashboard polling.
+      if (!await this.canRecoverTask(candidate)) continue;
+      const recovered = candidate.status === "running"
+        ? await db.update(aiTasks).set({ status: "queued", executionToken: null, leaseExpiresAt: nextQueueLease, updatedAt: now }).where(and(eq(aiTasks.id, candidate.id), eq(aiTasks.organizationId, organizationId), eq(aiTasks.status, "running"), or(isNull(aiTasks.leaseExpiresAt), lt(aiTasks.leaseExpiresAt, now)))).returning({ id: aiTasks.id })
+        : await db.update(aiTasks).set({ leaseExpiresAt: nextQueueLease, updatedAt: now }).where(and(eq(aiTasks.id, candidate.id), eq(aiTasks.organizationId, organizationId), eq(aiTasks.status, "queued"), isNull(aiTasks.executionToken), or(isNull(aiTasks.leaseExpiresAt), lt(aiTasks.leaseExpiresAt, now)))).returning({ id: aiTasks.id });
+      if (!recovered.length) continue;
+      const wasRunning = candidate.status === "running";
+      const task = recovered[0]!;
       await this.event(task.id, organizationId, "recovered", wasRunning ? "Lease của Worker đã hết hạn; task được đưa lại vào hàng đợi." : "Task chưa được Worker claim đúng hạn; đã enqueue lại.");
       try { await this.jobs.enqueueAiTask({ taskId: task.id, organizationId, recovery: true }); }
       catch { await this.event(task.id, organizationId, "recovery_queue_error", "Không thể enqueue recovery; hệ thống sẽ thử lại sau khi lease hết hạn."); }

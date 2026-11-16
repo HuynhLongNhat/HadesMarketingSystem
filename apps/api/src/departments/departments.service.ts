@@ -6,8 +6,8 @@ import {
   NotFoundException,
 } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
-import { and, desc, eq } from "drizzle-orm";
-import { db, departments, aiAgents, aiTasks, departmentTaskRuns, departmentTaskSteps } from "@workspace/db/node";
+import { and, desc, eq, inArray } from "drizzle-orm";
+import { db, departments, aiAgents, aiTaskEvents, aiTasks, departmentTaskRuns, departmentTaskSteps } from "@workspace/db/node";
 
 import type { RequestContext } from "../auth/request-context.js";
 import {
@@ -16,6 +16,7 @@ import {
   CreateDepartmentTaskRunDto,
 } from "./departments.dto.js";
 import { TasksService } from "../tasks/tasks.service.js";
+import { departmentWorkflowWaitingToken, isReleasedDepartmentStep } from "./department-workflow-state.js";
 
 @Injectable()
 export class DepartmentsService {
@@ -245,13 +246,47 @@ export class DepartmentsService {
     return { ...department, members, runs };
   }
 
+  async getRun(context: RequestContext, departmentId: string, runId: string) {
+    await this.getById(context, departmentId);
+    // This recovers only an expired *released* task. Held later steps are
+    // excluded by TasksService and are never auto-enqueued from a page view.
+    await this.tasks.recoverExpiredTasks(context.organizationId);
+    const [run] = await db.select().from(departmentTaskRuns).where(and(eq(departmentTaskRuns.id, runId), eq(departmentTaskRuns.departmentId, departmentId), eq(departmentTaskRuns.organizationId, context.organizationId))).limit(1);
+    if (!run) throw new NotFoundException("Không tìm thấy lượt thực thi phòng ban.");
+    let rows = await db.select({ step: departmentTaskSteps, task: aiTasks }).from(departmentTaskSteps).innerJoin(aiTasks, and(eq(aiTasks.id, departmentTaskSteps.taskId), eq(aiTasks.organizationId, departmentTaskSteps.organizationId))).where(and(eq(departmentTaskSteps.runId, runId), eq(departmentTaskSteps.organizationId, context.organizationId))).orderBy(departmentTaskSteps.sequence);
+    // Recovery for a Worker process that completed/persisted a Task but died
+    // before its finally block advanced the Department workflow.
+    for (const row of rows) if (["completed", "failed", "cancelled"].includes(row.task.status) && !["completed", "failed", "cancelled"].includes(row.step.status)) await this.advanceTask(context.organizationId, row.task.id);
+    rows = await db.select({ step: departmentTaskSteps, task: aiTasks }).from(departmentTaskSteps).innerJoin(aiTasks, and(eq(aiTasks.id, departmentTaskSteps.taskId), eq(aiTasks.organizationId, departmentTaskSteps.organizationId))).where(and(eq(departmentTaskSteps.runId, runId), eq(departmentTaskSteps.organizationId, context.organizationId))).orderBy(departmentTaskSteps.sequence);
+    const taskIds = rows.map(({ task }) => task.id);
+    const events = taskIds.length ? await db.select({ taskId: aiTaskEvents.taskId, type: aiTaskEvents.type, message: aiTaskEvents.message, createdAt: aiTaskEvents.createdAt }).from(aiTaskEvents).where(and(eq(aiTaskEvents.organizationId, context.organizationId), inArray(aiTaskEvents.taskId, taskIds))).orderBy(desc(aiTaskEvents.createdAt)) : [];
+    const latestEvent = new Map<string, typeof events[number]>();
+    for (const event of events) if (!latestEvent.has(event.taskId)) latestEvent.set(event.taskId, event);
+    const steps = rows.map(({ step, task }) => ({ ...step, status: task.status, startedAt: task.startedAt, taskCompletedAt: task.completedAt, updatedAt: task.updatedAt, attemptCount: task.attemptCount, leaseExpiresAt: task.leaseExpiresAt, lastEvent: latestEvent.get(task.id) ?? null, output: step.output ?? task.result, error: step.error ?? task.error }));
+    const final = steps.at(-1);
+    return { ...run, steps, finalReport: run.status === "completed" ? final?.output ?? null : null };
+  }
+
+  async markTaskRunning(organizationId: string, taskId: string) {
+    const [step] = await db.select({ id: departmentTaskSteps.id, runId: departmentTaskSteps.runId }).from(departmentTaskSteps).where(and(eq(departmentTaskSteps.organizationId, organizationId), eq(departmentTaskSteps.taskId, taskId))).limit(1);
+    if (!step) return;
+    await db.transaction(async (tx) => {
+      await tx.update(departmentTaskSteps).set({ status: "running", updatedAt: new Date() }).where(and(eq(departmentTaskSteps.id, step.id), eq(departmentTaskSteps.status, "queued")));
+      await tx.update(departmentTaskRuns).set({ status: "running", updatedAt: new Date() }).where(and(eq(departmentTaskRuns.id, step.runId), eq(departmentTaskRuns.organizationId, organizationId), eq(departmentTaskRuns.status, "queued")));
+    });
+  }
+
+  /** Deterministic Market Intelligence assignments; never infer a role from list order. */
   private pickWorkflow(department: typeof departments.$inferSelect, agents: Array<typeof aiAgents.$inferSelect>) {
     const active = agents.filter((agent) => agent.status === "active" && agent.connectionId && agent.modelId);
-    const lead = active.find((agent) => agent.id === department.leadAgentId) ?? active[0];
-    if (!lead) throw new BadRequestException("Phòng ban chưa có nhân viên AI đang hoạt động với cấu hình Provider.");
+    const lead = active.find((agent) => agent.id === department.leadAgentId);
+    if (!lead) throw new BadRequestException("Phòng ban chưa có Trưởng phòng đang hoạt động với cấu hình AI.");
     if (department.slug !== "market-intelligence") return [{ agent: lead, role: "Trưởng phòng", webResearch: false }];
-    const research = active.find((agent) => agent.toolConfig.enabledTools.includes("web_research")) ?? lead;
-    const insights = active.find((agent) => /insight|phân tích|customer/i.test(`${agent.role} ${agent.name}`)) ?? lead;
+    const role = (agent: typeof aiAgents.$inferSelect) => `${agent.role} ${agent.name}`.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+    const research = active.find((agent) => /research|nghien cuu|market analyst/.test(role(agent)) && agent.toolConfig.enabledTools.includes("web_research"));
+    if (!research) throw new BadRequestException("Phòng Market Intelligence cần một Research Agent đang hoạt động, có vai trò Nghiên cứu và công cụ web_research.");
+    const insights = active.find((agent) => /customer insights|insights|phan tich khach hang|customer analyst/.test(role(agent)));
+    if (!insights) throw new BadRequestException("Phòng Market Intelligence cần một Customer Insights Agent đang hoạt động với vai trò phân tích khách hàng.");
     return [{ agent: lead, role: "Intelligence Manager", webResearch: false }, { agent: research, role: "Research Agent", webResearch: true }, { agent: insights, role: "Customer Insights Agent", webResearch: false }, { agent: lead, role: "Intelligence Manager", webResearch: false }];
   }
 
@@ -266,7 +301,7 @@ export class DepartmentsService {
       for (let index = 0; index < workflow.length; index++) {
         const step = workflow[index]!;
         const prior = index ? `\n\nKết quả bước trước sẽ được chuyển tự động sau khi hoàn tất.` : "";
-        const task = await this.tasks.create(context, { title: `[${department.name}] ${title} · Bước ${index + 1}`, description: `${input}${prior}\n\nVai trò trong workflow phòng ban: ${step.role}. Hoàn thành đúng phần việc của bạn, không tự giao bước khác.`, agentId: step.agent.id }, { enqueue: false, webResearchEnabled: step.webResearch });
+        const task = await this.tasks.create(context, { title: `[${department.name}] ${title} · Bước ${index + 1}`, description: `${input}${prior}\n\nVai trò trong workflow phòng ban: ${step.role}. Hoàn thành đúng phần việc của bạn, không tự giao bước khác.`, agentId: step.agent.id }, { enqueue: false, webResearchEnabled: step.webResearch, deferredExecutionToken: index ? departmentWorkflowWaitingToken(runId, index + 1) : undefined });
         prepared.push({ task, ...step });
       }
       const [run] = await db.insert(departmentTaskRuns).values({ id: runId, organizationId: context.organizationId, departmentId: id, createdBy: context.userId, title, input, status: "queued" }).returning();
@@ -284,7 +319,7 @@ export class DepartmentsService {
     if (!task) return;
     const terminal = task.status === "completed" ? "completed" : task.status === "cancelled" ? "cancelled" : task.status === "failed" ? "failed" : null;
     if (!terminal) return;
-    const [changed] = await db.update(departmentTaskSteps).set({ status: terminal, output: task.result, error: task.error, completedAt: new Date(), updatedAt: new Date() }).where(and(eq(departmentTaskSteps.id, step.id), eq(departmentTaskSteps.status, "queued"))).returning({ id: departmentTaskSteps.id });
+    const [changed] = await db.update(departmentTaskSteps).set({ status: terminal, output: task.result, error: task.error, completedAt: new Date(), updatedAt: new Date() }).where(and(eq(departmentTaskSteps.id, step.id), inArray(departmentTaskSteps.status, ["queued", "running"]))).returning({ id: departmentTaskSteps.id });
     if (!changed) return;
     if (terminal !== "completed") { await db.update(departmentTaskRuns).set({ status: terminal, completedAt: new Date(), updatedAt: new Date() }).where(and(eq(departmentTaskRuns.id, step.runId), eq(departmentTaskRuns.organizationId, organizationId))); return; }
     const [next] = await db.select().from(departmentTaskSteps).where(and(eq(departmentTaskSteps.runId, step.runId), eq(departmentTaskSteps.organizationId, organizationId), eq(departmentTaskSteps.sequence, step.sequence + 1))).limit(1);
@@ -292,7 +327,12 @@ export class DepartmentsService {
     // Pass only the persisted previous output to the next Agent. This is real
     // orchestration state, not an instruction pretending another Agent ran.
     const [nextTask] = await db.select({ description: aiTasks.description }).from(aiTasks).where(and(eq(aiTasks.id, next.taskId), eq(aiTasks.organizationId, organizationId))).limit(1);
-    if (nextTask) await db.update(aiTasks).set({ description: `${nextTask.description}\n\n--- OUTPUT BƯỚC ${step.sequence} (${step.role}) ---\n${task.result ?? "Không có output."}\n--- END OUTPUT ---`, updatedAt: new Date() }).where(and(eq(aiTasks.id, next.taskId), eq(aiTasks.organizationId, organizationId), eq(aiTasks.status, "queued")));
+    if (!nextTask) return;
+    const releasedDescription = `${nextTask.description}\n\n--- OUTPUT BƯỚC ${step.sequence} (${step.role}) ---\n${task.result ?? "Không có output."}\n--- END OUTPUT ---`;
+    // The conditional release is the sequential-workflow gate. A stale job
+    // for a future step cannot claim it while it holds the waiting token.
+    const [released] = await db.update(aiTasks).set({ description: releasedDescription, executionToken: null, leaseExpiresAt: new Date(Date.now() + 120_000), updatedAt: new Date() }).where(and(eq(aiTasks.id, next.taskId), eq(aiTasks.organizationId, organizationId), eq(aiTasks.status, "queued"))).returning({ id: aiTasks.id });
+    if (!released || !isReleasedDepartmentStep({ sequence: next.sequence, description: releasedDescription, previousStepStatus: terminal })) return;
     await db.update(departmentTaskRuns).set({ status: "running", updatedAt: new Date() }).where(and(eq(departmentTaskRuns.id, step.runId), eq(departmentTaskRuns.organizationId, organizationId)));
     await this.tasks.enqueue(next);
   }
