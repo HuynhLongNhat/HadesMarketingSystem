@@ -19,7 +19,7 @@ export class MarketIntelligenceController {
   @Post(":id/cancel") @RequirePermissions(PERMISSIONS.AGENT_MANAGE)
   cancel(@CurrentContext() ctx: RequestContext, @Param("id") id: string) { return this.service.cancel(ctx, id); }
   @Post(":id/retry") @RequirePermissions(PERMISSIONS.AGENT_MANAGE)
-  retry(@CurrentContext() ctx: RequestContext, @Param("id") id: string) { return this.service.retry(ctx, id); }
+  retry(@CurrentContext() ctx: RequestContext, @Param("id") id: string) { return this.service.retry(ctx, id, true); }
   @Post(":id/resume") @RequirePermissions(PERMISSIONS.AGENT_MANAGE)
-  resume(@CurrentContext() ctx: RequestContext, @Param("id") id: string, @Body() dto: ResumeMarketResearchDto) { return this.service.retry(ctx, id, dto.refreshAgentConfiguration ?? false); }
+  resume(@CurrentContext() ctx: RequestContext, @Param("id") id: string, @Body() dto: ResumeMarketResearchDto) { return this.service.retry(ctx, id, dto.refreshAgentConfiguration ?? true); }
 }
