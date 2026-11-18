@@ -648,7 +648,7 @@ function ResearchDetail({
   const [tab, setTab] = useState<DetailTab>(
     detail.report ? "report" : "progress",
   );
-  const [refreshAgentConfiguration, setRefreshAgentConfiguration] = useState(false);
+  const [refreshAgentConfiguration, setRefreshAgentConfiguration] = useState(true);
   const activeStatus = detail.task?.status ?? detail.status;
   const extracted = detail.sources.filter(
     (source) => source.extractionStatus === "retrieved",
@@ -1018,7 +1018,7 @@ export function MarketIntelligenceView() {
     }, 3_000);
     return () => window.clearInterval(id);
   }, [selectedTaskStatus, load, open]);
-  const manageJob = async (action: "cancel" | "retry", refreshAgentConfiguration = false) => {
+  const manageJob = async (action: "cancel" | "retry", refreshAgentConfiguration = true) => {
     if (!selected || refreshing) return;
     setRefreshing(true);
     try {
