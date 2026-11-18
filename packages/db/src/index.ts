@@ -202,8 +202,8 @@ export { businessProfiles, BUSINESS_RISK_TOLERANCES, BUSINESS_MODELS, BUSINESS_D
 export type { BusinessProfile, BusinessRiskTolerance, BusinessModel, BusinessDevelopmentStage } from "./business-profile-schema.js";
 export { businessDoctrines } from "./business-doctrine-schema.js";
 export type { BusinessDoctrine } from "./business-doctrine-schema.js";
-export { marketIntelligenceProjects, marketIntelligenceSourceConfigs, marketIntelligenceReports, marketIntelligenceFindings, MARKET_INTELLIGENCE_PROJECT_STATUSES, MARKET_INTELLIGENCE_SOURCE_KINDS, MARKET_INTELLIGENCE_SOURCE_STATUSES } from "./market-intelligence-schema.js";
-export type { MarketIntelligenceProject } from "./market-intelligence-schema.js";
+export { marketIntelligenceProjects, marketIntelligenceJobSteps, marketIntelligenceSourceConfigs, marketIntelligenceReports, marketIntelligenceFindings, MARKET_INTELLIGENCE_PROJECT_STATUSES, MARKET_INTELLIGENCE_JOB_STEP_STATUSES, MARKET_INTELLIGENCE_SOURCE_KINDS, MARKET_INTELLIGENCE_SOURCE_STATUSES } from "./market-intelligence-schema.js";
+export type { MarketIntelligenceProject, MarketIntelligenceJobStep } from "./market-intelligence-schema.js";
 
 export {
   crmContacts,

@@ -18,7 +18,7 @@ export class TasksService {
     await db.insert(aiTaskEvents).values({ id: randomUUID(), taskId, organizationId, type, message });
   }
 
-  async create(ctx: RequestContext, dto: CreateTaskDto, options: { enqueue?: boolean; webResearchEnabled?: boolean; runtime?: { connectionId: string; modelId: string }; deferredExecutionToken?: string } = {}) {
+  async create(ctx: RequestContext, dto: CreateTaskDto, options: { enqueue?: boolean; webResearchEnabled?: boolean; researchProvider?: string; runtime?: { connectionId: string; modelId: string }; deferredExecutionToken?: string } = {}) {
     const title = dto.title.trim(), description = dto.description.trim();
     if (!title || !description) throw new BadRequestException("Task title and description are required");
     // New Agent tasks let the configured model decide at execution time whether
@@ -50,7 +50,7 @@ export class TasksService {
       modelId = model.modelId;
     }
     const id = randomUUID();
-    const [task] = await db.insert(aiTasks).values({ id, organizationId: ctx.organizationId, createdBy: ctx.userId, title, description, connectionId, modelId, ...agentSnapshot, webResearchEnabled, researchProvider: webResearchEnabled ? "tavily" : null, researchPolicyVersion: webResearchEnabled ? "v1" : null, executionToken: options.deferredExecutionToken ?? null, leaseExpiresAt: options.deferredExecutionToken ? null : this.queueLeaseExpiresAt() }).returning();
+    const [task] = await db.insert(aiTasks).values({ id, organizationId: ctx.organizationId, createdBy: ctx.userId, title, description, connectionId, modelId, ...agentSnapshot, webResearchEnabled, researchProvider: webResearchEnabled ? options.researchProvider ?? "tavily" : null, researchPolicyVersion: webResearchEnabled ? "v1" : null, executionToken: options.deferredExecutionToken ?? null, leaseExpiresAt: options.deferredExecutionToken ? null : this.queueLeaseExpiresAt() }).returning();
     await this.event(id, ctx.organizationId, "queued", webResearchEnabled ? `Task đang chờ Worker xử lý bởi Agent ${agentSnapshot.agentName}; Agent sẽ tự quyết định có cần Web Research.` : "Task đang chờ Worker xử lý.");
     if (options.enqueue !== false) await this.enqueue(task);
     return task;

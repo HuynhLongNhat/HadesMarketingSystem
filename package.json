@@ -4,11 +4,15 @@
   "private": true,
   "scripts": {
     "build": "turbo run build",
-    "dev": "turbo run dev",
+    "dev": "node tools/local-dev.mjs",
+    "dev:all": "node tools/local-dev.mjs --with-infra",
     "dev:web": "pnpm --filter web dev",
     "dev:widget": "pnpm --filter widget dev",
+    "dev:embed": "pnpm --filter embed dev",
     "dev:api": "pnpm --filter @workspace/api start:dev",
     "dev:worker": "pnpm --filter @workspace/api start:worker:dev",
+    "infra:up": "node tools/local-dev.mjs infra:up",
+    "infra:down": "node tools/local-dev.mjs infra:down",
     "check-types": "turbo run check-types",
     "lint": "turbo run lint",
     "format": "prettier --write \"**/*.{ts,tsx,md}\""

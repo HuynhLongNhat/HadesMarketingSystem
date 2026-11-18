@@ -30,6 +30,14 @@ import { extractCeoStructuredPlan, validateCeoPlanAgentReferences } from "../ceo
 import { resolveGenerationSettings } from "./generation-settings.js";
 import { extractStrategicReview } from "../ceo-planning/strategic-review.js";
 import { isDepartmentWorkflowWaitingToken, isReleasedDepartmentStep } from "../departments/department-workflow-state.js";
+import { ResearchServiceClient, ResearchServiceError } from "../market-intelligence/research-service.client.js";
+import {
+  completeMarketIntelligenceRun,
+  failMarketIntelligenceRun,
+  startMarketIntelligenceRun,
+  updateMarketIntelligenceStep,
+  type MarketIntelligenceStepStatus,
+} from "../market-intelligence/market-intelligence-progress.js";
 
 const TIMEOUT_MS = 60_000;
 const CEO_PLAN_TIMEOUT_MS = 180_000;
@@ -93,7 +101,7 @@ function isRetryableStatus(status: number) {
 @Injectable()
 export class TaskAiExecutionService {
   private readonly logger = new Logger(TaskAiExecutionService.name);
-  constructor(private readonly usage: AiUsageRecorder, private readonly quota: AiUsageQuotaService, private readonly research?: SearchProviderRuntimeService) {}
+  constructor(private readonly usage: AiUsageRecorder, private readonly quota: AiUsageQuotaService, private readonly research?: SearchProviderRuntimeService, private readonly researchService?: ResearchServiceClient) {}
 
   private prompt(task: { title: string; description: string; agentName: string | null; agentRole: string | null; agentSystemPrompt: string | null }, evidence?: ResearchEvidence) {
     const limitations = "MVP này KHÔNG có Web Search, dữ liệu Internet trực tiếp hoặc tool được tích hợp. Không được gọi, giả lập hoặc tuyên bố đã dùng tool/Web Search. Không được bịa số liệu, nguồn dẫn, thị phần, giá cả hoặc tuyên bố rằng đã nghiên cứu Internet; hãy nêu rõ các giả định và dữ liệu cần kiểm chứng khi phù hợp.";
@@ -147,6 +155,10 @@ export class TaskAiExecutionService {
     return db.update(aiTasks).set({ leaseExpiresAt, updatedAt: new Date() }).where(and(eq(aiTasks.id, taskId), eq(aiTasks.organizationId, organizationId), eq(aiTasks.executionToken, token), eq(aiTasks.status, "running")));
   }
 
+  private renewMarketIntelligenceHeartbeat(projectId: string, organizationId: string) {
+    return db.update(marketIntelligenceProjects).set({ lastHeartbeatAt: new Date(), updatedAt: new Date() }).where(and(eq(marketIntelligenceProjects.id, projectId), eq(marketIntelligenceProjects.organizationId, organizationId), eq(marketIntelligenceProjects.status, "running")));
+  }
+
   private researchQuery(task: typeof aiTasks.$inferSelect) {
     return `${task.title}\n${task.description}`.replace(/\s+/g, " ").trim().slice(0, 500);
   }
@@ -192,7 +204,7 @@ export class TaskAiExecutionService {
     return { code: "RESEARCH_EXECUTION_ERROR", retryable: false, message: "Không thể hoàn tất tìm kiếm Web Research." };
   }
 
-  private async webResearch(task: typeof aiTasks.$inferSelect, executionToken: string, requestedQuery?: string, forceNew = false): Promise<ResearchEvidence> {
+  private async webResearch(task: typeof aiTasks.$inferSelect, executionToken: string, requestedQuery?: string, forceNew = false, providerOverride?: string, maxResults = 5): Promise<ResearchEvidence> {
     if (!task.agentId || !this.research) throw new TaskProviderError("Task Web Research yêu cầu Agent và Search Provider runtime.", false);
     const [completedRun] = await db.select().from(aiTaskResearchRuns).where(and(eq(aiTaskResearchRuns.taskId, task.id), eq(aiTaskResearchRuns.organizationId, task.organizationId), eq(aiTaskResearchRuns.status, "completed"))).orderBy(desc(aiTaskResearchRuns.createdAt)).limit(1);
     if (completedRun && !forceNew) {
@@ -202,10 +214,10 @@ export class TaskAiExecutionService {
     const query = requestedQuery?.trim().slice(0, 500) || this.researchQuery(task);
     const runId = randomUUID();
     const now = new Date();
-    await db.insert(aiTaskResearchRuns).values({ id: runId, organizationId: task.organizationId, taskId: task.id, provider: task.researchProvider ?? "tavily", query, status: "running", queryCount: 1, requestCount: 1, startedAt: now, updatedAt: now });
+    await db.insert(aiTaskResearchRuns).values({ id: runId, organizationId: task.organizationId, taskId: task.id, provider: providerOverride ?? task.researchProvider ?? "tavily", query, status: "running", queryCount: 1, requestCount: 1, startedAt: now, updatedAt: now });
     await this.event(task.id, task.organizationId, "research_started", `Worker đang tìm kiếm Web Research với Tavily: ${query}`);
     try {
-      const response = await this.research.searchForResearch({ organizationId: task.organizationId, userId: task.createdBy, sessionId: `ai-task-${task.id}`, role: "owner" }, { agentId: task.agentId, request: { query, searchDepth: "basic", maxResults: 5 } });
+      const response = await this.research.searchForResearch({ organizationId: task.organizationId, userId: task.createdBy, sessionId: `ai-task-${task.id}`, role: "owner" }, { agentId: task.agentId, request: { query, searchDepth: "basic", maxResults: Math.min(10, maxResults) } });
       if (!await this.hasClaim(task, executionToken)) throw new TaskCancelledError();
       const existing = await db.select({ id: aiTaskResearchSources.id }).from(aiTaskResearchSources).where(and(eq(aiTaskResearchSources.taskId, task.id), eq(aiTaskResearchSources.organizationId, task.organizationId)));
       const seenUrls = new Set<string>();
@@ -240,14 +252,63 @@ export class TaskAiExecutionService {
     }
   }
 
+  private tavilyFallbackAllowed() { return process.env.MARKET_RESEARCH_ALLOW_TAVILY_FALLBACK === "true"; }
+
+  /** Persist SearXNG/Trafilatura evidence using the same tenant-safe research
+   * tables and citation mapping as the established Tavily path. */
+  private async marketResearchWithService(task: typeof aiTasks.$inferSelect, executionToken: string, queries: string[], maxResults: number): Promise<ResearchEvidence> {
+    if (!this.researchService) throw new ResearchServiceError("RESEARCH_SERVICE_UNAVAILABLE", "Research Service chưa được cấu hình.");
+    const result = await this.researchService.research({ queries, maxResults });
+    if (!await this.hasClaim(task, executionToken)) throw new TaskCancelledError();
+    const runId = randomUUID();
+    const now = new Date();
+    await db.insert(aiTaskResearchRuns).values({ id: runId, organizationId: task.organizationId, taskId: task.id, provider: result.provider, query: queries.join(" | ").slice(0, 500), status: "running", queryCount: result.queries.length, requestCount: result.queries.length, startedAt: now, updatedAt: now });
+    const existing = await db.select({ id: aiTaskResearchSources.id }).from(aiTaskResearchSources).where(and(eq(aiTaskResearchSources.taskId, task.id), eq(aiTaskResearchSources.organizationId, task.organizationId)));
+    const seenUrls = new Set<string>();
+    const sources: Array<typeof aiTaskResearchSources.$inferInsert> = [];
+    for (const source of result.sources) {
+      try {
+        const parsed = new URL(source.canonical_url);
+        if ((parsed.protocol !== "https:" && parsed.protocol !== "http:") || seenUrls.has(source.canonical_url)) continue;
+        seenUrls.add(source.canonical_url);
+        const extractionStatus = source.extraction_status === "retrieved" ? "retrieved" : source.extraction_status === "blocked" ? "blocked" : "failed";
+        sources.push({
+          id: randomUUID(), organizationId: task.organizationId, taskId: task.id, researchRunId: runId,
+          ordinal: existing.length + sources.length + 1, canonicalUrl: source.canonical_url.slice(0, 2048), displayUrl: source.url.slice(0, 2048), title: source.title.trim().slice(0, 512) || parsed.hostname,
+          domain: source.domain.slice(0, 253) || parsed.hostname, excerpt: source.snippet?.slice(0, 12000) ?? null,
+          extractedContent: source.extracted_content?.slice(0, 40000) ?? null, extractionStatus,
+          extractionError: source.extraction_error?.slice(0, 256) ?? null, contentHash: source.content_hash?.slice(0, 128) ?? null,
+          status: extractionStatus, retrievedAt: new Date(source.retrieved_at),
+        });
+      } catch { /* Service output is validated again before persistence. */ }
+    }
+    const evidenceSources = sources.filter((source) => source.status === "retrieved");
+    await db.transaction(async (tx) => {
+      if (sources.length) await tx.insert(aiTaskResearchSources).values(sources);
+      if (evidenceSources.length) await tx.insert(aiTaskReportCitations).values(evidenceSources.map((source) => ({ id: randomUUID(), organizationId: task.organizationId, taskId: task.id, sourceId: source.id, citationNumber: source.ordinal })));
+      await tx.update(aiTaskResearchRuns).set({ status: "completed", sourceCount: sources.length, completedAt: new Date(), updatedAt: new Date(), safeErrorCode: null }).where(and(eq(aiTaskResearchRuns.id, runId), eq(aiTaskResearchRuns.organizationId, task.organizationId), eq(aiTaskResearchRuns.taskId, task.id)));
+    });
+    await this.event(task.id, task.organizationId, "research_completed", `SearXNG/Trafilatura đã xử lý ${sources.length} nguồn; ${evidenceSources.length} nguồn trích xuất thành công.`);
+    return { query: result.queries.join(" | "), provider: result.provider, sources: evidenceSources.map((source) => ({ citationNumber: source.ordinal, title: source.title, url: source.displayUrl, excerpt: source.extractedContent?.slice(0, 12000) ?? source.excerpt ?? null })) };
+  }
+
   private marketQueries(project: { industry: string; market: string; objective: string; keywords: unknown }) {
     const keywords = Array.isArray(project.keywords) ? project.keywords.filter((item): item is string => typeof item === "string" && item.trim().length > 0).slice(0, 2) : [];
     return [...new Set([`${project.industry} ${project.market} ${project.objective}`, ...keywords.map((keyword) => `${keyword} ${project.market}`)].map((query) => query.replace(/\s+/g, " ").trim().slice(0, 500)).filter(Boolean))].slice(0, 3);
   }
 
-  private marketIntelligencePrompt(project: { industry: string; market: string; objective: string }, evidence: ResearchEvidence[]) {
+  private marketIntelligencePrompt(project: { industry: string; market: string; objective: string; targetAudience: string | null }, evidence: ResearchEvidence[]) {
     const sources = evidence.flatMap((run) => run.sources.map((source) => `[${source.citationNumber}] ${source.title}\n${source.url}\n${source.excerpt ?? ""}`)).join("\n\n");
-    return `Bạn là Intelligence Manager. Viết báo cáo tình báo thị trường bằng tiếng Việt dựa CHỈ trên evidence. Không bịa dữ liệu, nguồn hay thống kê. Phân biệt Dữ kiện có bằng chứng, Nhận định suy luận và Giả thuyết cần kiểm chứng. Mỗi kết luận có nguồn phải dùng [số].\n\nNgành: ${project.industry}\nThị trường: ${project.market}\nMục tiêu: ${project.objective}\n\nBắt buộc gồm: # Tóm tắt; ## Dữ kiện và xu hướng; ## Nhu cầu và nỗi đau khách hàng; ## Cơ hội kinh doanh; ## Giả thuyết cần kiểm chứng; ## Giới hạn nghiên cứu; ## Nguồn tham khảo.\n\nEvidence:\n${sources || "Không có nguồn phù hợp; nêu rõ giới hạn nghiên cứu."}`;
+    return `Bạn là Intelligence Manager. Viết báo cáo tình báo thị trường bằng tiếng Việt dựa CHỈ trên evidence. Không bịa dữ liệu, nguồn hay thống kê. Phân biệt Dữ kiện có bằng chứng, Nhận định suy luận và Giả thuyết cần kiểm chứng. Mỗi kết luận có nguồn phải dùng [số].\n\nNgành: ${project.industry}\nThị trường: ${project.market}\nKhách hàng mục tiêu: ${project.targetAudience ?? "Chưa có dữ liệu; nêu rõ đây là khoảng trống thông tin."}\nMục tiêu: ${project.objective}\n\nBắt buộc gồm đúng các mục: # Executive Summary; ## Research Objective; ## Market Findings; ## Customer Pain Points; ## Customer Needs; ## Competitor Insights; ## Opportunities; ## Risks & Limitations; ## Recommended Actions; ## Evidence & References. Với các mục không có đủ evidence, ghi rõ giới hạn thay vì suy đoán.\n\nEvidence:\n${sources || "Không có nguồn phù hợp; nêu rõ giới hạn nghiên cứu."}`;
+  }
+
+  private marketStructuredReport(content: string, evidence: ResearchEvidence[]) {
+    const headings = [...content.matchAll(/^#{1,2}\s+(.+)$/gm)];
+    const sections = headings.map((heading, index) => ({
+      title: heading[1]!.trim(),
+      content: content.slice((heading.index ?? 0) + heading[0].length, headings[index + 1]?.index ?? content.length).trim(),
+    })).filter((section) => section.content.length > 0);
+    return { version: "v1", generatedFromEvidence: true, evidenceSourceCount: evidence.reduce((total, item) => total + item.sources.length, 0), sections };
   }
 
   private async runtime(task: typeof aiTasks.$inferSelect): Promise<Runtime> {
@@ -384,10 +445,16 @@ export class TaskAiExecutionService {
       void this.renewLease(task.id, task.organizationId, executionToken).catch(() => {
         this.logger.warn(`Could not renew AI task lease: ${task.id}`);
       });
+      // A long provider call is still live while its Task lease is owned. The
+      // project heartbeat lets the dashboard distinguish that from a stalled Worker.
+      if (marketProject) void this.hasClaim(task, executionToken).then(async (owned) => {
+        if (owned && marketProject) await this.renewMarketIntelligenceHeartbeat(marketProject.id, task.organizationId);
+      }).catch(() => undefined);
     }, LEASE_HEARTBEAT_MS);
     heartbeat.unref();
     let runtime: Runtime | null = null;
     let marketProject: typeof marketIntelligenceProjects.$inferSelect | undefined;
+    let marketStep: MarketIntelligenceStepStatus | undefined;
     const reservationIds: string[] = [];
     const usageEntries: Array<{ usage: Usage; purpose: string }> = [];
     let usageReliable = true;
@@ -406,11 +473,58 @@ export class TaskAiExecutionService {
       }
       let marketEvidence: ResearchEvidence[] | null = null;
       if (marketProject) {
-        await db.update(marketIntelligenceProjects).set({ status: "running", updatedAt: new Date() }).where(and(eq(marketIntelligenceProjects.id, marketProject.id), eq(marketIntelligenceProjects.organizationId, task.organizationId)));
+        await startMarketIntelligenceRun({
+          projectId: marketProject.id,
+          organizationId: task.organizationId,
+          // `task` was read before the atomic claim increments its counter.
+          attemptCount: task.attemptCount + 1,
+          maxAttempts: MAX_TASK_EXECUTIONS,
+          executionTimeoutAt: new Date(Date.now() + TIMEOUT_MS),
+        });
+        marketStep = "building_queries";
         marketEvidence = [];
-        for (const query of this.marketQueries(marketProject)) marketEvidence.push(await this.webResearch(task, executionToken, query, true));
+        const queries = this.marketQueries(marketProject);
+        await updateMarketIntelligenceStep({ projectId: marketProject.id, organizationId: task.organizationId, stepKey: "building_queries", status: "completed", resultCount: queries.length });
+        marketStep = "searching_sources";
+        await updateMarketIntelligenceStep({ projectId: marketProject.id, organizationId: task.organizationId, stepKey: marketStep, status: "running" });
+        if (marketProject.researchProvider === "tavily") {
+          let remaining = marketProject.maxSources;
+          for (const query of queries) {
+            if (remaining <= 0) break;
+            const evidence = await this.webResearch(task, executionToken, query, true, "tavily", remaining);
+            marketEvidence.push(evidence);
+            remaining -= evidence.sources.length;
+          }
+        } else {
+          try {
+            marketEvidence.push(await this.marketResearchWithService(task, executionToken, queries, marketProject.maxSources));
+          } catch (error) {
+            if (!(error instanceof ResearchServiceError)) throw error;
+            if (!this.tavilyFallbackAllowed()) throw new TaskProviderError(error.message, error.code === "RESEARCH_SERVICE_UNAVAILABLE");
+            await this.event(task.id, task.organizationId, "research_provider_fallback", "Research Service chưa sẵn sàng; dùng Tavily vì đã được cho phép fallback.");
+            let remaining = marketProject.maxSources;
+            for (const query of queries) {
+              if (remaining <= 0) break;
+              const evidence = await this.webResearch(task, executionToken, query, true, "tavily", remaining);
+              marketEvidence.push(evidence);
+              remaining -= evidence.sources.length;
+            }
+          }
+        }
+        await updateMarketIntelligenceStep({ projectId: marketProject.id, organizationId: task.organizationId, stepKey: "searching_sources", status: "completed", resultCount: marketEvidence.reduce((total, evidence) => total + evidence.sources.length, 0) });
+        // Sources are persisted inside `webResearch`; this read confirms the
+        // evidence available to the synthesis phase rather than inventing progress.
+        marketStep = "collecting_evidence";
+        await updateMarketIntelligenceStep({ projectId: marketProject.id, organizationId: task.organizationId, stepKey: marketStep, status: "running" });
+        const [persistedEvidence] = await db.select({ count: sql<number>`count(*)::int` }).from(aiTaskResearchSources).where(and(eq(aiTaskResearchSources.taskId, task.id), eq(aiTaskResearchSources.organizationId, task.organizationId)));
+        await updateMarketIntelligenceStep({ projectId: marketProject.id, organizationId: task.organizationId, stepKey: marketStep, status: "completed", resultCount: persistedEvidence?.count ?? 0 });
+        marketStep = "analyzing_evidence";
+        await updateMarketIntelligenceStep({ projectId: marketProject.id, organizationId: task.organizationId, stepKey: marketStep, status: "running" });
       }
-      if (task.webResearchEnabled && task.agentId) {
+      // A Market Intelligence project has explicit, persisted search queries
+      // above. Do not issue a second autonomous research-decision request and
+      // make the displayed workflow diverge from actual provider calls.
+      if (!marketProject && task.webResearchEnabled && task.agentId) {
         const decision = await this.decideResearch(runtime, task);
         await this.event(task.id, task.organizationId, "research_decision", decision.useResearch ? "Agent quyết định cần Web Research." : decision.fallback ? "Agent không trả về quyết định hợp lệ; tiếp tục không dùng Web Research." : "Agent quyết định không cần Web Research.");
         if (decision.useResearch) evidence = await this.webResearch(task, executionToken, decision.query ?? undefined);
@@ -482,11 +596,18 @@ export class TaskAiExecutionService {
         await this.event(task.id, task.organizationId, "strategic_review_completed", "Strategic Reviewer đã hoàn tất đánh giá.");
       }
       if (marketProject) {
-        await db.insert(marketIntelligenceReports).values({ id: randomUUID(), organizationId: task.organizationId, projectId: marketProject.id, taskId: task.id, content: result.text }).onConflictDoUpdate({ target: marketIntelligenceReports.projectId, set: { content: result.text } });
-        await db.update(marketIntelligenceProjects).set({ status: "completed", updatedAt: new Date() }).where(and(eq(marketIntelligenceProjects.id, marketProject.id), eq(marketIntelligenceProjects.organizationId, task.organizationId)));
+        await updateMarketIntelligenceStep({ projectId: marketProject.id, organizationId: task.organizationId, stepKey: "analyzing_evidence", status: "completed" });
+        marketStep = "saving_report";
+        await updateMarketIntelligenceStep({ projectId: marketProject.id, organizationId: task.organizationId, stepKey: marketStep, status: "running" });
+        await db.insert(marketIntelligenceReports).values({ id: randomUUID(), organizationId: task.organizationId, projectId: marketProject.id, taskId: task.id, content: result.text, structuredReport: this.marketStructuredReport(result.text, marketEvidence ?? []) }).onConflictDoUpdate({ target: marketIntelligenceReports.projectId, set: { content: result.text, structuredReport: this.marketStructuredReport(result.text, marketEvidence ?? []) } });
       }
       const completed = await db.update(aiTasks).set({ status: "completed", result: result.text, error: null, executionToken: null, leaseExpiresAt: null, completedAt: new Date(), updatedAt: new Date() }).where(and(eq(aiTasks.id, task.id), eq(aiTasks.organizationId, task.organizationId), eq(aiTasks.executionToken, executionToken), ne(aiTasks.status, "cancelled"))).returning({ id: aiTasks.id });
       if (completed.length) {
+        if (marketProject) {
+          // 100% is published only when both the report and the authoritative
+          // Task terminal state have been persisted (cancellation may race us).
+          await completeMarketIntelligenceRun({ projectId: marketProject.id, organizationId: task.organizationId });
+        }
         // Record only after the terminal state is stored. A BullMQ retry will
         // then observe `completed` and cannot create a duplicate usage entry.
         usageReliable = (await Promise.all(usageEntries.map((entry) => this.usage.record({ organizationId: task.organizationId, provider: runtime!.provider, modelId: runtime!.modelId, purpose: entry.purpose, status: "success", inputTokens: token(entry.usage.input), outputTokens: token(entry.usage.output), totalTokens: token(entry.usage.total), latencyMs: Date.now() - started })))).every(Boolean);
@@ -501,12 +622,9 @@ export class TaskAiExecutionService {
     } catch (error) {
       if (error instanceof TaskCancelledError) {
         usageReliable = false;
-        if (marketProject) await db.update(marketIntelligenceProjects).set({ status: "cancelled", updatedAt: new Date() }).where(and(eq(marketIntelligenceProjects.taskId, task.id), eq(marketIntelligenceProjects.organizationId, task.organizationId), eq(marketIntelligenceProjects.status, "running")));
+        if (marketProject) await db.update(marketIntelligenceProjects).set({ status: "cancelled", completedAt: new Date(), lastHeartbeatAt: new Date(), updatedAt: new Date() }).where(and(eq(marketIntelligenceProjects.taskId, task.id), eq(marketIntelligenceProjects.organizationId, task.organizationId), eq(marketIntelligenceProjects.status, "running")));
         return;
       }
-      // A Market Intelligence Project is only a Task projection. Keep its
-      // visible lifecycle aligned with the authoritative Task terminal state.
-      if (marketProject) await db.update(marketIntelligenceProjects).set({ status: "failed", updatedAt: new Date() }).where(and(eq(marketIntelligenceProjects.taskId, task.id), eq(marketIntelligenceProjects.organizationId, task.organizationId), eq(marketIntelligenceProjects.status, "running")));
       const message = safeError(error);
       this.logger.error(JSON.stringify({
         event: "ai_task.execution_failed",
@@ -516,6 +634,7 @@ export class TaskAiExecutionService {
         ...safeExecutionFailure(error),
       }), error instanceof Error ? error.stack?.split("\n").slice(1, 7).join("\n") : undefined);
       if (error instanceof TaskProviderError && error.retryable && !finalAttempt) {
+        if (marketProject) await failMarketIntelligenceRun({ projectId: marketProject.id, organizationId: task.organizationId, stepKey: marketStep, error: message, terminal: false });
         // A request can have returned tokens before a later phase fails (for
         // example the one permitted CEO JSON repair). Account for those tokens
         // now; the next BullMQ attempt has a new execution token and must not
@@ -543,6 +662,7 @@ export class TaskAiExecutionService {
       }
       const failed = await db.update(aiTasks).set({ status: "failed", error: message, executionToken: null, leaseExpiresAt: null, completedAt: new Date(), updatedAt: new Date() }).where(and(eq(aiTasks.id, task.id), eq(aiTasks.organizationId, task.organizationId), eq(aiTasks.executionToken, executionToken), ne(aiTasks.status, "cancelled"))).returning({ id: aiTasks.id });
       if (failed.length) {
+        if (marketProject) await failMarketIntelligenceRun({ projectId: marketProject.id, organizationId: task.organizationId, stepKey: marketStep, error: message, terminal: true });
         if (runtime) {
           const entries = usageEntries.length ? usageEntries : [{ usage: {} as Usage, purpose: "market_research_task" }];
           usageReliable = (await Promise.all(entries.map((entry) => this.usage.record({ organizationId: task.organizationId, provider: runtime!.provider, modelId: runtime!.modelId, purpose: entry.purpose, status: "failed", inputTokens: token(entry.usage.input), outputTokens: token(entry.usage.output), totalTokens: token(entry.usage.total), latencyMs: Date.now() - started, errorCode: error instanceof TaskProviderError ? error.kind : "execution_error" })))).every(Boolean) && usageReliable;

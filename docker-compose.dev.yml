@@ -1,0 +1,48 @@
+name: nova-local
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - nova-local-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  searxng:
+    image: searxng/searxng:latest
+    environment:
+      SEARXNG_BASE_URL: http://searxng:8080/
+    volumes:
+      - ./services/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:8080/healthz >/dev/null 2>&1 || wget -q -O - http://localhost:8080/ >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  research-service:
+    build:
+      context: ./services/research-service
+    environment:
+      SEARXNG_URL: http://searxng:8080
+      RESEARCH_HTTP_TIMEOUT_SECONDS: 15
+      RESEARCH_MAX_CONCURRENCY: 4
+    ports:
+      - "127.0.0.1:8010:8000"
+    depends_on:
+      searxng:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  nova-local-redis-data:

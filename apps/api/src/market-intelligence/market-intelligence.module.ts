@@ -4,4 +4,5 @@ import { PermissionsGuard } from "../common/permissions/permissions.guard.js";
 import { TasksModule } from "../tasks/tasks.module.js";
 import { MarketIntelligenceController } from "./market-intelligence.controller.js";
 import { MarketIntelligenceService } from "./market-intelligence.service.js";
-@Module({ imports: [TasksModule], controllers: [MarketIntelligenceController], providers: [MarketIntelligenceService, AuthGuard, PermissionsGuard] }) export class MarketIntelligenceModule {}
+import { ResearchServiceClient } from "./research-service.client.js";
+@Module({ imports: [TasksModule], controllers: [MarketIntelligenceController], providers: [MarketIntelligenceService, ResearchServiceClient, AuthGuard, PermissionsGuard], exports: [ResearchServiceClient] }) export class MarketIntelligenceModule {}

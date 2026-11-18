@@ -1,0 +1,11 @@
+use_default_settings: true
+
+server:
+  secret_key: "nova-local-searxng-development-only"
+  limiter: true
+  image_proxy: false
+
+search:
+  formats:
+    - html
+    - json
