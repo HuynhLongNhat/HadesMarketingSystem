@@ -5,7 +5,7 @@ import { SearchProviderConnectionTestService } from "./search-provider-connectio
 
 const connection = {
   id: "connection-1", organizationId: "org-1", provider: "tavily" as const, name: "Tavily",
-  encryptedApiKey: "encrypted", keyIv: "iv", keyAuthTag: "tag", keyVersion: "v1", enabled: true,
+  encryptedApiKey: "encrypted", keyIv: "iv", keyAuthTag: "tag", keyVersion: "v1", enabled: true, priority: 100, consecutiveFailures: 0, circuitOpenUntil: null,
   createdAt: new Date(), updatedAt: new Date(),
 };
 const originalFetch = globalThis.fetch;

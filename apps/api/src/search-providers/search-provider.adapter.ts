@@ -26,7 +26,8 @@ export interface SearchResponse {
 
 export interface SearchProviderAdapter {
   readonly provider: string;
-  search(apiKey: string, request: SearchRequest): Promise<SearchResponse>;
+  readonly requiresApiKey: boolean;
+  search(apiKey: string | null, request: SearchRequest): Promise<SearchResponse>;
 }
 
 export type SearchProviderErrorCode =
@@ -35,7 +36,9 @@ export type SearchProviderErrorCode =
   | "SEARCH_PROVIDER_TIMEOUT"
   | "SEARCH_PROVIDER_UNAVAILABLE"
   | "SEARCH_PROVIDER_UNSUPPORTED"
-  | "SEARCH_PROVIDER_INVALID_RESPONSE";
+  | "SEARCH_PROVIDER_INVALID_RESPONSE"
+  | "SEARCH_PROVIDER_LOW_QUALITY"
+  | "SEARCH_PROVIDER_CIRCUIT_OPEN";
 
 export class SearchProviderRuntimeError extends Error {
   constructor(readonly code: SearchProviderErrorCode, message: string) {

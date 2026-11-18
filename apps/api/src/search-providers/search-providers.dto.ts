@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
-import { IsBoolean, IsIn, IsNotEmpty, IsOptional, IsString, MaxLength } from "class-validator";
+import { IsBoolean, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, Max, MaxLength, Min } from "class-validator";
 
 import { SEARCH_PROVIDER_TYPES, type SearchProviderType } from "@workspace/db/node";
 
@@ -14,11 +14,19 @@ export class CreateSearchProviderDto {
   @MaxLength(100)
   name!: string;
 
-  @ApiProperty({ writeOnly: true, description: "Stored encrypted and never returned." })
+  @ApiPropertyOptional({ writeOnly: true, description: "Required for Tavily/Brave, not used by self-hosted SearXNG." })
+  @IsOptional()
   @IsString()
   @IsNotEmpty()
   @MaxLength(4096)
-  apiKey!: string;
+  apiKey?: string;
+
+  @ApiPropertyOptional({ minimum: 1, maximum: 1000, default: 100 })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(1000)
+  priority?: number;
 }
 
 export class UpdateSearchProviderDto {
@@ -40,4 +48,11 @@ export class UpdateSearchProviderDto {
   @IsOptional()
   @IsBoolean()
   enabled?: boolean;
+
+  @ApiPropertyOptional({ minimum: 1, maximum: 1000 })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(1000)
+  priority?: number;
 }

@@ -23,13 +23,13 @@ const date = (value: string | null) => value ? new Intl.DateTimeFormat("vi-VN", 
 function errorMessage(error: unknown) {
   if (!(error instanceof ApiError)) return "Không thể kết nối hệ thống. Vui lòng thử lại.";
   if (error.message.includes("AGENT_CAPABILITY_REQUIRED")) return "Nhân viên này chưa được cấp công cụ tìm kiếm Internet. Hãy cập nhật công cụ làm việc của nhân viên.";
-  if (error.message.includes("SEARCH_PROVIDER_NOT_CONFIGURED")) return "Công ty chưa kết nối công cụ tìm kiếm Internet. Hãy cấu hình Tavily trước khi chạy nhiệm vụ cần nghiên cứu.";
+  if (error.message.includes("SEARCH_PROVIDER_NOT_CONFIGURED")) return "Công ty chưa có công cụ tìm kiếm Internet khả dụng. Hãy cấu hình SearXNG, Tavily hoặc Brave Search.";
   if (error.message.includes("SEARCH_PROVIDER_DISABLED")) return "Công cụ tìm kiếm Internet hiện đang tắt. Hãy bật lại trong phần cấu hình AI & Công cụ.";
   return error.message;
 }
 
 function ConfigurationHint({ message }: { message: string }) {
-  const needsSearchConfiguration = /tìm kiếm Internet|Tavily|công cụ tìm kiếm/i.test(message);
+  const needsSearchConfiguration = /tìm kiếm Internet|Tavily|Brave|SearXNG|công cụ tìm kiếm/i.test(message);
   return <div className="mt-3 flex flex-wrap items-center gap-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-sm text-foreground">
     <Wrench className="size-4 shrink-0" /><span className="flex-1">{message}</span>
     {needsSearchConfiguration && <Button size="sm" variant="outline" asChild><Link href="/settings/ai-providers?tab=search">Mở cấu hình</Link></Button>}

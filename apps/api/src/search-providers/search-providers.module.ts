@@ -7,6 +7,8 @@ import { SearchProvidersService } from "./search-providers.service.js";
 import { SearchProviderTestRateLimiter } from "./search-provider-test-rate-limiter.service.js";
 import { SearchProviderRuntimeService } from "./search-provider-runtime.service.js";
 import { TavilySearchAdapter } from "./tavily-search.adapter.js";
+import { SearxngSearchAdapter } from "./searxng-search.adapter.js";
+import { BraveSearchAdapter } from "./brave-search.adapter.js";
 
-@Module({ controllers: [SearchProvidersController], providers: [SearchProvidersService, SearchProviderConnectionTestService, SearchProviderTestRateLimiter, TavilySearchAdapter, SearchProviderRuntimeService, AuthGuard, PermissionsGuard], exports: [SearchProvidersService, SearchProviderRuntimeService] })
+@Module({ controllers: [SearchProvidersController], providers: [SearchProvidersService, SearchProviderConnectionTestService, SearchProviderTestRateLimiter, SearxngSearchAdapter, TavilySearchAdapter, BraveSearchAdapter, SearchProviderRuntimeService, AuthGuard, PermissionsGuard], exports: [SearchProvidersService, SearchProviderRuntimeService] })
 export class SearchProvidersModule {}

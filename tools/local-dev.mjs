@@ -140,7 +140,11 @@ async function main() {
   if (command === "--with-infra") await infraUp();
   process.on("SIGINT", () => { void shutdown(0); });
   process.on("SIGTERM", () => { void shutdown(0); });
-  start("turbo", ["exec", "turbo", "run", "dev", "--filter=web", "--filter=widget"]);
+  // Run each Next.js application as a direct child. A single Turbo wrapper
+  // can exit before its long-running dev children on Windows, leaving orphaned
+  // servers on ports 3000/3001 after Ctrl+C or an API/Worker failure.
+  start("web", ["--filter", "web", "dev"]);
+  start("widget", ["--filter", "widget", "dev"]);
   start("api", ["--filter", "@workspace/api", "start:dev"]);
   start("worker", ["--filter", "@workspace/api", "start:worker:dev"]);
 }

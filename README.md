@@ -17,7 +17,7 @@ Copy-Item .env.example .env.local # Chỉ khi bạn chưa có .env.local
 pnpm dev
 ```
 
-Lệnh này chạy Web và Widget qua Turborepo, đồng thời chạy API cùng BullMQ Worker ở watch mode. Redis phải đang sẵn sàng theo `REDIS_HOST`/`REDIS_PORT` trong `.env.local`.
+Lệnh này chạy Web, Widget, API và BullMQ Worker trong **một terminal**, tất cả ở watch mode. Mỗi tiến trình được launcher quản lý trực tiếp để `Ctrl+C` dừng sạch cả bốn tiến trình trên Windows. Redis phải đang sẵn sàng theo `REDIS_HOST`/`REDIS_PORT` trong `.env.local`.
 
 ```powershell
 pnpm dev:all
@@ -38,7 +38,7 @@ pnpm infra:down
 
 `infra:up` không khởi động Redis Docker nếu đã có Redis đáp ứng tại địa chỉ local đã cấu hình. Ngoài Redis, nó chạy SearXNG và Research Service nội bộ tại `127.0.0.1:8010`; SearXNG không được publish public. `infra:down` chỉ dừng Docker Compose development của Nova; không xóa volume Redis.
 
-Market Intelligence ưu tiên Research Service (`SearXNG` + `Trafilatura`). Tavily chỉ là fallback khi bạn chủ động cấu hình `MARKET_RESEARCH_ALLOW_TAVILY_FALLBACK=true`; mặc định không tự tiêu thụ Tavily credit.
+Hybrid Search ưu tiên Research Service/SearXNG nội bộ. Cấu hình thứ tự tại **Cấu hình AI & Công cụ → Công cụ tìm kiếm**: giá trị ưu tiên nhỏ hơn chạy trước; kết quả không liên quan hoặc provider lỗi mới chuyển sang provider kế tiếp. Tavily và Brave là provider trả phí: chúng chỉ được dùng khi một luồng chọn trực tiếp provider đó, hoặc bạn chủ động bật `MARKET_RESEARCH_ALLOW_PAID_FALLBACK=true` (biến cũ `MARKET_RESEARCH_ALLOW_TAVILY_FALLBACK=true` vẫn tương thích). Mặc định hệ thống không tự tiêu thụ credit của provider trả phí.
 
 ### Migration database
 

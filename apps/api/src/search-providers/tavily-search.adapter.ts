@@ -21,8 +21,10 @@ type TavilyResponse = { results?: unknown };
 @Injectable()
 export class TavilySearchAdapter implements SearchProviderAdapter {
   readonly provider = "tavily";
+  readonly requiresApiKey = true;
 
-  async search(apiKey: string, request: SearchRequest): Promise<SearchResponse> {
+  async search(apiKey: string | null, request: SearchRequest): Promise<SearchResponse> {
+    if (!apiKey) throw new SearchProviderRuntimeError("SEARCH_PROVIDER_AUTH_FAILED", "Search provider credential is unavailable.");
     try {
       const response = await fetch("https://api.tavily.com/search", {
         method: "POST",

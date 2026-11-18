@@ -12,17 +12,19 @@ if (!organizationId || !agentId || !query) {
   throw new Error("Usage: research:tavily <organizationId> <agentId> <query> [connectionId]");
 }
 
-const [{ pool }, { SearchProvidersService }, { SearchProviderConnectionTestService }, { TavilySearchAdapter }, { SearchProviderRuntimeService }] = await Promise.all([
+const [{ pool }, { SearchProvidersService }, { SearchProviderConnectionTestService }, { TavilySearchAdapter }, { SearxngSearchAdapter }, { BraveSearchAdapter }, { SearchProviderRuntimeService }] = await Promise.all([
   import("@workspace/db/node"),
   import("./search-providers.service.js"),
   import("./search-provider-connection-test.service.js"),
   import("./tavily-search.adapter.js"),
+  import("./searxng-search.adapter.js"),
+  import("./brave-search.adapter.js"),
   import("./search-provider-runtime.service.js"),
 ]);
 
 try {
   const policy = new SearchProvidersService(new SearchProviderConnectionTestService());
-  const runtime = new SearchProviderRuntimeService(policy, new TavilySearchAdapter());
+  const runtime = new SearchProviderRuntimeService(policy, new SearxngSearchAdapter(), new TavilySearchAdapter(), new BraveSearchAdapter());
   const result = await runtime.searchForResearch({ organizationId, userId: "development-research-harness", sessionId: "development-research-harness", role: "owner" }, { agentId, connectionId, request: { query } });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 } finally {

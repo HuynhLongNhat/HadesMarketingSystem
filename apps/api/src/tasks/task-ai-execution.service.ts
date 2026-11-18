@@ -194,7 +194,7 @@ export class TaskAiExecutionService {
   }
 
   private safeResearchError(error: unknown) {
-    if (error instanceof SearchProviderRuntimeError) return { code: error.code, retryable: error.code === "SEARCH_PROVIDER_RATE_LIMITED" || error.code === "SEARCH_PROVIDER_TIMEOUT" || error.code === "SEARCH_PROVIDER_UNAVAILABLE", message: error.code === "SEARCH_PROVIDER_AUTH_FAILED" ? "Credential Tavily không hợp lệ hoặc đã bị từ chối." : error.code === "SEARCH_PROVIDER_RATE_LIMITED" ? "Tavily đang giới hạn lượt tìm kiếm." : error.code === "SEARCH_PROVIDER_TIMEOUT" ? "Tavily hết thời gian phản hồi." : "Không thể hoàn tất tìm kiếm Web Research." };
+    if (error instanceof SearchProviderRuntimeError) return { code: error.code, retryable: error.code === "SEARCH_PROVIDER_RATE_LIMITED" || error.code === "SEARCH_PROVIDER_TIMEOUT" || error.code === "SEARCH_PROVIDER_UNAVAILABLE", message: error.code === "SEARCH_PROVIDER_AUTH_FAILED" ? "Credential Search Provider không hợp lệ hoặc đã bị từ chối." : error.code === "SEARCH_PROVIDER_RATE_LIMITED" ? "Search Provider đang giới hạn lượt tìm kiếm." : error.code === "SEARCH_PROVIDER_TIMEOUT" ? "Search Provider hết thời gian phản hồi." : error.code === "SEARCH_PROVIDER_LOW_QUALITY" ? "Search Provider không trả về nguồn công khai phù hợp." : "Không thể hoàn tất tìm kiếm Web Research." };
     if (error instanceof HttpException) {
       const response = error.getResponse();
       const detail = typeof response === "object" && response !== null ? response as { code?: unknown; message?: unknown } : {};
@@ -204,7 +204,7 @@ export class TaskAiExecutionService {
     return { code: "RESEARCH_EXECUTION_ERROR", retryable: false, message: "Không thể hoàn tất tìm kiếm Web Research." };
   }
 
-  private async webResearch(task: typeof aiTasks.$inferSelect, executionToken: string, requestedQuery?: string, forceNew = false, providerOverride?: string, maxResults = 5): Promise<ResearchEvidence> {
+  private async webResearch(task: typeof aiTasks.$inferSelect, executionToken: string, requestedQuery?: string, forceNew = false, providerOverride?: string, maxResults = 5, excludeProviders?: string[], allowPaidFallback = false): Promise<ResearchEvidence> {
     if (!task.agentId || !this.research) throw new TaskProviderError("Task Web Research yêu cầu Agent và Search Provider runtime.", false);
     const [completedRun] = await db.select().from(aiTaskResearchRuns).where(and(eq(aiTaskResearchRuns.taskId, task.id), eq(aiTaskResearchRuns.organizationId, task.organizationId), eq(aiTaskResearchRuns.status, "completed"))).orderBy(desc(aiTaskResearchRuns.createdAt)).limit(1);
     if (completedRun && !forceNew) {
@@ -214,10 +214,10 @@ export class TaskAiExecutionService {
     const query = requestedQuery?.trim().slice(0, 500) || this.researchQuery(task);
     const runId = randomUUID();
     const now = new Date();
-    await db.insert(aiTaskResearchRuns).values({ id: runId, organizationId: task.organizationId, taskId: task.id, provider: providerOverride ?? task.researchProvider ?? "tavily", query, status: "running", queryCount: 1, requestCount: 1, startedAt: now, updatedAt: now });
-    await this.event(task.id, task.organizationId, "research_started", `Worker đang tìm kiếm Web Research với Tavily: ${query}`);
+    await db.insert(aiTaskResearchRuns).values({ id: runId, organizationId: task.organizationId, taskId: task.id, provider: providerOverride ?? task.researchProvider ?? "hybrid", query, status: "running", queryCount: 1, requestCount: 1, startedAt: now, updatedAt: now });
+    await this.event(task.id, task.organizationId, "research_started", `Worker đang tìm kiếm Web Research: ${query}`);
     try {
-      const response = await this.research.searchForResearch({ organizationId: task.organizationId, userId: task.createdBy, sessionId: `ai-task-${task.id}`, role: "owner" }, { agentId: task.agentId, request: { query, searchDepth: "basic", maxResults: Math.min(10, maxResults) } });
+      const response = await this.research.searchForResearch({ organizationId: task.organizationId, userId: task.createdBy, sessionId: `ai-task-${task.id}`, role: "owner" }, { agentId: task.agentId, providers: providerOverride ? [providerOverride] : undefined, excludeProviders, allowPaidFallback, request: { query, searchDepth: "basic", maxResults: Math.min(10, maxResults) } });
       if (!await this.hasClaim(task, executionToken)) throw new TaskCancelledError();
       const existing = await db.select({ id: aiTaskResearchSources.id }).from(aiTaskResearchSources).where(and(eq(aiTaskResearchSources.taskId, task.id), eq(aiTaskResearchSources.organizationId, task.organizationId)));
       const seenUrls = new Set<string>();
@@ -252,7 +252,7 @@ export class TaskAiExecutionService {
     }
   }
 
-  private tavilyFallbackAllowed() { return process.env.MARKET_RESEARCH_ALLOW_TAVILY_FALLBACK === "true"; }
+  private paidFallbackAllowed() { return process.env.MARKET_RESEARCH_ALLOW_PAID_FALLBACK === "true" || process.env.MARKET_RESEARCH_ALLOW_TAVILY_FALLBACK === "true"; }
 
   /** Persist SearXNG/Trafilatura evidence using the same tenant-safe research
    * tables and citation mapping as the established Tavily path. */
@@ -500,12 +500,12 @@ export class TaskAiExecutionService {
             marketEvidence.push(await this.marketResearchWithService(task, executionToken, queries, marketProject.maxSources));
           } catch (error) {
             if (!(error instanceof ResearchServiceError)) throw error;
-            if (!this.tavilyFallbackAllowed()) throw new TaskProviderError(error.message, error.code === "RESEARCH_SERVICE_UNAVAILABLE");
-            await this.event(task.id, task.organizationId, "research_provider_fallback", "Research Service chưa sẵn sàng; dùng Tavily vì đã được cho phép fallback.");
+            if (!this.paidFallbackAllowed()) throw new TaskProviderError(error.message, error.code === "RESEARCH_SERVICE_UNAVAILABLE");
+            await this.event(task.id, task.organizationId, "research_provider_fallback", "Research Service chưa sẵn sàng; thử Search Provider trả phí kế tiếp vì đã được cho phép fallback.");
             let remaining = marketProject.maxSources;
             for (const query of queries) {
               if (remaining <= 0) break;
-              const evidence = await this.webResearch(task, executionToken, query, true, "tavily", remaining);
+              const evidence = await this.webResearch(task, executionToken, query, true, undefined, remaining, ["searxng"], true);
               marketEvidence.push(evidence);
               remaining -= evidence.sources.length;
             }

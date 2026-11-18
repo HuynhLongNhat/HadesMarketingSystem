@@ -1,5 +1,6 @@
 import {
   boolean,
+  integer,
   index,
   pgTable,
   text,
@@ -10,7 +11,7 @@ import {
 import { organization } from "./schema.js";
 
 /** Search connections are intentionally separate from LLM provider connections. */
-export const SEARCH_PROVIDER_TYPES = ["tavily"] as const;
+export const SEARCH_PROVIDER_TYPES = ["searxng", "tavily", "brave"] as const;
 export type SearchProviderType = (typeof SEARCH_PROVIDER_TYPES)[number];
 
 export const searchProviderConnections = pgTable(
@@ -22,11 +23,16 @@ export const searchProviderConnections = pgTable(
       .references(() => organization.id, { onDelete: "cascade" }),
     provider: text("provider", { enum: SEARCH_PROVIDER_TYPES }).notNull(),
     name: text("name").notNull(),
-    encryptedApiKey: text("encrypted_api_key").notNull(),
-    keyIv: text("key_iv").notNull(),
-    keyAuthTag: text("key_auth_tag").notNull(),
+    // Self-hosted SearXNG has no credential. Paid providers keep exactly the
+    // existing encrypted credential envelope; plaintext is never persisted.
+    encryptedApiKey: text("encrypted_api_key"),
+    keyIv: text("key_iv"),
+    keyAuthTag: text("key_auth_tag"),
     keyVersion: text("key_version").notNull().default("v1"),
     enabled: boolean("enabled").notNull().default(true),
+    priority: integer("priority").notNull().default(100),
+    consecutiveFailures: integer("consecutive_failures").notNull().default(0),
+    circuitOpenUntil: timestamp("circuit_open_until", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

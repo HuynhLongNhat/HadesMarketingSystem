@@ -11,7 +11,7 @@
     "check-types": "tsc --noEmit",
     "lint": "eslint src",
     "start:worker": "node dist/worker.js",
-    "start:worker:dev": "nest start --entryFile worker --watch",
+    "start:worker:dev": "nest start --config nest-cli.worker.json --watch",
     "test:queue": "node dist/jobs/test-enqueue.js",
     "research:tavily": "pnpm run build && node dist/search-providers/tavily-search.harness.js",
     "test:security": "tsc -p tsconfig.security-test.json && node --import ./dist-security-test/test-env.js --test dist-security-test/security/security.spec.js",
