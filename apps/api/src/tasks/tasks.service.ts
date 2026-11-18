@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
 import { and, desc, eq, isNull, lt, or } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { aiAgents, aiModelDefaults, aiProviderConnections, aiTaskEvents, aiTaskReportCitations, aiTaskResearchRuns, aiTaskResearchSources, aiTasks, db, departmentTaskSteps } from "@workspace/db/node";
@@ -6,6 +6,7 @@ import type { RequestContext } from "../auth/request-context.js";
 import { JobsService } from "../jobs/jobs.service.js";
 import type { CreateTaskDto } from "./tasks.dto.js";
 import { isDepartmentWorkflowWaitingToken, isReleasedDepartmentStep } from "../departments/department-workflow-state.js";
+import { MAX_TASK_EXECUTIONS } from "./task-execution-state.js";
 
 const QUEUE_CLAIM_TIMEOUT_MS = 120_000;
 
@@ -64,6 +65,33 @@ export class TasksService {
       await this.event(task.id, task.organizationId, "failed", "Không thể đưa task vào hàng đợi xử lý.");
       throw error;
     }
+  }
+
+  /** Explicit user resume; keep the original task, evidence, events and usage. */
+  async resumeResearch(ctx: RequestContext, taskId: string, refreshAgentConfiguration = false) {
+    const task = await db.transaction(async (tx) => {
+      const [current] = await tx.select().from(aiTasks).where(and(eq(aiTasks.id, taskId), eq(aiTasks.organizationId, ctx.organizationId))).for("update");
+      if (!current) throw new NotFoundException("Không tìm thấy nhiệm vụ nghiên cứu.");
+      if (current.status !== "failed") throw new ConflictException("Nghiên cứu đang xử lý hoặc chưa thất bại; không thể thử lại đồng thời.");
+      if (current.attemptCount >= MAX_TASK_EXECUTIONS) throw new BadRequestException("Đã đạt giới hạn 4 lần thực thi. Hãy kiểm tra cấu hình và tạo nghiên cứu mới.");
+      let snapshot: Partial<typeof aiTasks.$inferInsert> = {};
+      if (refreshAgentConfiguration) {
+        const [agent] = await tx.select().from(aiAgents).where(and(eq(aiAgents.id, current.agentId ?? ""), eq(aiAgents.organizationId, ctx.organizationId)));
+        if (!agent || agent.status !== "active" || !agent.connectionId || !agent.modelId) throw new BadRequestException("Nhân viên phải đang hoạt động và có cấu hình AI hợp lệ.");
+        const [connection] = await tx.select().from(aiProviderConnections).where(and(eq(aiProviderConnections.id, agent.connectionId), eq(aiProviderConnections.organizationId, ctx.organizationId), eq(aiProviderConnections.enabled, true)));
+        if (!connection) throw new BadRequestException("Kết nối AI của nhân viên không khả dụng.");
+        snapshot = { connectionId: agent.connectionId, modelId: agent.modelId, agentConnectionId: agent.connectionId, agentModelId: agent.modelId, agentName: agent.name, agentRole: agent.role, agentSystemPrompt: agent.systemPrompt };
+      }
+      const [resumed] = await tx.update(aiTasks).set({ ...snapshot, status: "queued", error: null, completedAt: null, executionToken: null, leaseExpiresAt: this.queueLeaseExpiresAt(), updatedAt: new Date() }).where(and(eq(aiTasks.id, taskId), eq(aiTasks.organizationId, ctx.organizationId), eq(aiTasks.status, "failed"))).returning();
+      await tx.insert(aiTaskEvents).values({ id: randomUUID(), taskId, organizationId: ctx.organizationId, type: "research_resumed", message: refreshAgentConfiguration ? "Người dùng yêu cầu tiếp tục với cấu hình Agent hiện tại. Giữ dữ liệu nguồn; kết quả phân tích cũ sẽ được kiểm tra lại theo cấu hình mới." : "Người dùng yêu cầu tiếp tục từ checkpoint hợp lệ. Giữ lịch sử lỗi và dữ liệu nguồn." });
+      return resumed!;
+    });
+    try { await this.jobs.enqueueAiTask({ taskId, organizationId: ctx.organizationId, recovery: true }); }
+    catch (error) {
+      await db.update(aiTasks).set({ status: "failed", error: "Không thể enqueue lượt tiếp tục. Dữ liệu checkpoint vẫn được giữ.", leaseExpiresAt: null, completedAt: new Date() }).where(and(eq(aiTasks.id, taskId), eq(aiTasks.organizationId, ctx.organizationId), eq(aiTasks.status, "queued"), isNull(aiTasks.executionToken)));
+      throw error;
+    }
+    return task;
   }
 
   /** A task that was deliberately created without enqueueing can be safely discarded. */

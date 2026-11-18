@@ -14,6 +14,7 @@ import {
   ceoPlanReviews,
   marketIntelligenceProjects,
   marketIntelligenceReports,
+  marketIntelligenceJobSteps,
   departmentTaskRuns,
   departmentTaskSteps,
   db,
@@ -31,8 +32,10 @@ import { resolveGenerationSettings } from "./generation-settings.js";
 import { extractStrategicReview } from "../ceo-planning/strategic-review.js";
 import { isDepartmentWorkflowWaitingToken, isReleasedDepartmentStep } from "../departments/department-workflow-state.js";
 import { ResearchServiceClient, ResearchServiceError } from "../market-intelligence/research-service.client.js";
+import { checkpointMutation, researchCheckpoint, ResearchLeaseLostError } from "../market-intelligence/research-checkpoint.js";
+import { classifyProviderError, readProviderError } from "./provider-error-diagnostics.js";
+import { aiTaskBackoff } from "../jobs/ai-task-backoff.js";
 import {
-  completeMarketIntelligenceRun,
   failMarketIntelligenceRun,
   startMarketIntelligenceRun,
   updateMarketIntelligenceStep,
@@ -297,6 +300,12 @@ export class TaskAiExecutionService {
     return [...new Set([`${project.industry} ${project.market} ${project.objective}`, ...keywords.map((keyword) => `${keyword} ${project.market}`)].map((query) => query.replace(/\s+/g, " ").trim().slice(0, 500)).filter(Boolean))].slice(0, 3);
   }
 
+  private async persistedMarketEvidence(task: typeof aiTasks.$inferSelect, runIds?: string[]): Promise<ResearchEvidence[]> {
+    const runs = await db.select().from(aiTaskResearchRuns).where(and(eq(aiTaskResearchRuns.taskId, task.id), eq(aiTaskResearchRuns.organizationId, task.organizationId), eq(aiTaskResearchRuns.status, "completed")));
+    const sources = await db.select().from(aiTaskResearchSources).where(and(eq(aiTaskResearchSources.taskId, task.id), eq(aiTaskResearchSources.organizationId, task.organizationId))).orderBy(aiTaskResearchSources.ordinal);
+    return runs.filter((run) => !runIds || runIds.includes(run.id)).map((run) => ({ query: run.query ?? "", provider: run.provider, sources: sources.filter((source) => source.researchRunId === run.id && source.status === "retrieved").map((source) => ({ citationNumber: source.ordinal, title: source.title, url: source.displayUrl, excerpt: source.extractedContent?.slice(0, 12000) ?? source.excerpt })) }));
+  }
+
   private marketIntelligencePrompt(project: { industry: string; market: string; objective: string; targetAudience: string | null }, evidence: ResearchEvidence[]) {
     const sources = evidence.flatMap((run) => run.sources.map((source) => `[${source.citationNumber}] ${source.title}\n${source.url}\n${source.excerpt ?? ""}`)).join("\n\n");
     return `Bạn là Intelligence Manager. Viết báo cáo tình báo thị trường bằng tiếng Việt dựa CHỈ trên evidence. Không bịa dữ liệu, nguồn hay thống kê. Phân biệt Dữ kiện có bằng chứng, Nhận định suy luận và Giả thuyết cần kiểm chứng. Mỗi kết luận có nguồn phải dùng [số].\n\nNgành: ${project.industry}\nThị trường: ${project.market}\nKhách hàng mục tiêu: ${project.targetAudience ?? "Chưa có dữ liệu; nêu rõ đây là khoảng trống thông tin."}\nMục tiêu: ${project.objective}\n\nBắt buộc gồm đúng các mục: # Executive Summary; ## Research Objective; ## Market Findings; ## Customer Pain Points; ## Customer Needs; ## Competitor Insights; ## Opportunities; ## Risks & Limitations; ## Recommended Actions; ## Evidence & References. Với các mục không có đủ evidence, ghi rõ giới hạn thay vì suy đoán.\n\nEvidence:\n${sources || "Không có nguồn phù hợp; nêu rõ giới hạn nghiên cứu."}`;
@@ -330,7 +339,9 @@ export class TaskAiExecutionService {
     const endpoint = definition.baseUrl.replace(/\/$/, "");
     if (definition.runtimeProtocol === "openai") return { provider: connection.provider, protocol: "openai", endpoint: `${endpoint}/chat/completions`, apiKey, modelId: task.modelId };
     if (definition.runtimeProtocol === "anthropic") return { provider: connection.provider, protocol: "anthropic", endpoint: `${endpoint}/messages`, apiKey, modelId: task.modelId };
-    return { provider: connection.provider, protocol: "google", endpoint: `${endpoint}/models/${encodeURIComponent(task.modelId)}:generateContent`, apiKey, modelId: task.modelId };
+    const modelId = task.modelId.replace(/^models\//, "");
+    if (!/^[a-zA-Z0-9._:-]+$/.test(modelId)) throw new TaskProviderError("Model ID Google không hợp lệ: đang dùng tên hiển thị. Hãy chọn lại mô hình trong hồ sơ nhân viên (ví dụ gemini-2.5-flash), sau đó tiếp tục với cấu hình Agent đã cập nhật.", false);
+    return { provider: connection.provider, protocol: "google", endpoint: `${endpoint}/models/${encodeURIComponent(modelId)}:generateContent`, apiKey, modelId };
   }
 
   private async request(runtime: Runtime, prompt: string, maxOutputTokens = MAX_OUTPUT_TOKENS, timeoutMs = TIMEOUT_MS): Promise<{ text: string; usage: Usage }> {
@@ -352,13 +363,13 @@ export class TaskAiExecutionService {
     }
     if (!response.ok) {
       const retryAfter = response.status === 429 ? retryAfterSeconds(response.headers.get("retry-after")) : null;
-      this.logger.warn(JSON.stringify({ event: "ai_provider.response_error", provider: runtime.provider, category: "http_error", status: response.status, contentType: response.headers.get("content-type"), requestId: response.headers.get("x-request-id") ?? response.headers.get("x-openrouter-request-id") ?? null, retryAfterSeconds: retryAfter }));
-      await response.body?.cancel();
+      const diagnostic = classifyProviderError(response.status, await readProviderError(response));
+      this.logger.warn(JSON.stringify({ event: "ai_provider.response_error", provider: runtime.provider, category: diagnostic.category, status: response.status, durationMs: Date.now() - started, contentType: response.headers.get("content-type"), requestId: response.headers.get("x-request-id") ?? response.headers.get("x-openrouter-request-id") ?? null, retryAfterSeconds: retryAfter }));
       if (response.status === 429) {
         const waitSeconds = retryAfter ?? DEFAULT_RATE_LIMIT_RETRY_SECONDS;
         throw new TaskProviderError(`AI Provider đang giới hạn lượt gọi. Hãy thử lại sau ít nhất ${waitSeconds} giây.`, true, waitSeconds, "PROVIDER_RATE_LIMITED");
       }
-      throw new TaskProviderError(`AI Provider trả về HTTP ${response.status}.`, isRetryableStatus(response.status));
+      throw new TaskProviderError(`AI Provider trả về HTTP ${response.status}. ${diagnostic.guidance}`, isRetryableStatus(response.status));
     }
     let body: { choices?: Array<{ message?: { content?: string }; finish_reason?: unknown }>; content?: Array<{ text?: string }>; stop_reason?: unknown; usage?: { input_tokens?: unknown; output_tokens?: unknown; prompt_tokens?: unknown; completion_tokens?: unknown; total_tokens?: unknown }; usageMetadata?: { promptTokenCount?: unknown; candidatesTokenCount?: unknown; totalTokenCount?: unknown }; candidates?: Array<{ content?: { parts?: Array<{ text?: string }> }; finishReason?: unknown }> };
     try {
@@ -459,7 +470,6 @@ export class TaskAiExecutionService {
     const usageEntries: Array<{ usage: Usage; purpose: string }> = [];
     let usageReliable = true;
     try {
-      runtime = await this.runtime(task);
       let evidence: ResearchEvidence | undefined;
       // Market Intelligence is a separate projection. Do not query its tables
       // for ordinary/Department Tasks: an unavailable optional module must not
@@ -471,7 +481,13 @@ export class TaskAiExecutionService {
       if (isMarketIntelligenceTask && !marketProject) {
         throw new TaskProviderError("Không tìm thấy dự án Tình báo thị trường tương ứng với task này.", false);
       }
+      if (marketProject) {
+        const [pending] = await db.select({ stepKey: marketIntelligenceJobSteps.stepKey }).from(marketIntelligenceJobSteps).where(and(eq(marketIntelligenceJobSteps.projectId, marketProject.id), eq(marketIntelligenceJobSteps.organizationId, task.organizationId), ne(marketIntelligenceJobSteps.status, "completed"))).orderBy(marketIntelligenceJobSteps.sequence).limit(1);
+        marketStep = (pending?.stepKey ?? "analyzing_evidence") as MarketIntelligenceStepStatus;
+      }
+      runtime = await this.runtime(task);
       let marketEvidence: ResearchEvidence[] | null = null;
+      const checkpointIdentity = () => ({ taskId: task.id, organizationId: task.organizationId, projectId: marketProject!.id, executionToken });
       if (marketProject) {
         await startMarketIntelligenceRun({
           projectId: marketProject.id,
@@ -481,16 +497,30 @@ export class TaskAiExecutionService {
           maxAttempts: MAX_TASK_EXECUTIONS,
           executionTimeoutAt: new Date(Date.now() + TIMEOUT_MS),
         });
+        marketStep = "preparing";
+        await researchCheckpoint(checkpointIdentity(), marketStep, { projectId: marketProject.id }, (v): v is { projectId: string } => v.projectId === marketProject!.id, async () => ({ projectId: marketProject!.id }));
         marketStep = "building_queries";
         marketEvidence = [];
-        const queries = this.marketQueries(marketProject);
-        await updateMarketIntelligenceStep({ projectId: marketProject.id, organizationId: task.organizationId, stepKey: "building_queries", status: "completed", resultCount: queries.length });
+        const queryCheckpoint = await researchCheckpoint(checkpointIdentity(), marketStep, { industry: marketProject.industry, market: marketProject.market, objective: marketProject.objective, keywords: marketProject.keywords }, (v): v is { queries: string[] } => Array.isArray(v.queries) && v.queries.length > 0 && v.queries.every((query) => typeof query === "string" && query.length > 0), async () => ({ queries: this.marketQueries(marketProject!) }));
+        const queries = queryCheckpoint.output.queries;
         marketStep = "searching_sources";
+        const evidenceInput = { queries, provider: marketProject.researchProvider, maxSources: marketProject.maxSources };
+        const searchCheckpoint = await researchCheckpoint(checkpointIdentity(), marketStep, evidenceInput,
+          (v): v is { runIds: string[] } => Array.isArray(v.runIds) && v.runIds.length > 0 && v.runIds.every((id) => typeof id === "string"), async () => {
         await updateMarketIntelligenceStep({ projectId: marketProject.id, organizationId: task.organizationId, stepKey: marketStep, status: "running" });
-        if (marketProject.researchProvider === "tavily") {
+        // Existing completed runs are durable evidence, including pre-checkpoint
+        // projects. Never repeat a successful search merely to regenerate progress.
+        const savedRuns = await db.select().from(aiTaskResearchRuns).where(and(eq(aiTaskResearchRuns.taskId, task.id), eq(aiTaskResearchRuns.organizationId, task.organizationId), eq(aiTaskResearchRuns.status, "completed")));
+        const covered = new Set(savedRuns.map((run) => run.query));
+        if (marketProject.researchProvider !== "tavily" && covered.has(queries.join(" | ").slice(0, 500))) {
+          marketEvidence = await this.persistedMarketEvidence(task);
+        } else if (marketProject.researchProvider === "tavily") {
           let remaining = marketProject.maxSources;
+          marketEvidence = await this.persistedMarketEvidence(task);
+          remaining -= marketEvidence.reduce((n, evidence) => n + evidence.sources.length, 0);
           for (const query of queries) {
             if (remaining <= 0) break;
+            if (covered.has(query)) continue;
             const evidence = await this.webResearch(task, executionToken, query, true, "tavily", remaining);
             marketEvidence.push(evidence);
             remaining -= evidence.sources.length;
@@ -511,15 +541,21 @@ export class TaskAiExecutionService {
             }
           }
         }
+        const runs = await db.select({ id: aiTaskResearchRuns.id }).from(aiTaskResearchRuns).where(and(eq(aiTaskResearchRuns.taskId, task.id), eq(aiTaskResearchRuns.organizationId, task.organizationId), eq(aiTaskResearchRuns.status, "completed")));
+        return { runIds: runs.map((run) => run.id) };
+        });
+        marketEvidence = await this.persistedMarketEvidence(task, searchCheckpoint.output.runIds);
+        if (!marketEvidence.length) throw new TaskProviderError("Checkpoint tìm kiếm không còn dữ liệu nguồn. Hãy tạo nghiên cứu mới.", false);
         await updateMarketIntelligenceStep({ projectId: marketProject.id, organizationId: task.organizationId, stepKey: "searching_sources", status: "completed", resultCount: marketEvidence.reduce((total, evidence) => total + evidence.sources.length, 0) });
         // Sources are persisted inside `webResearch`; this read confirms the
         // evidence available to the synthesis phase rather than inventing progress.
         marketStep = "collecting_evidence";
-        await updateMarketIntelligenceStep({ projectId: marketProject.id, organizationId: task.organizationId, stepKey: marketStep, status: "running" });
+        await researchCheckpoint(checkpointIdentity(), marketStep, searchCheckpoint.output,
+          (v): v is { runIds: string[]; sourceCount: number } => Array.isArray(v.runIds) && typeof v.sourceCount === "number",
+          async () => ({ runIds: searchCheckpoint.output.runIds, sourceCount: marketEvidence!.reduce((n, evidence) => n + evidence.sources.length, 0) }));
         const [persistedEvidence] = await db.select({ count: sql<number>`count(*)::int` }).from(aiTaskResearchSources).where(and(eq(aiTaskResearchSources.taskId, task.id), eq(aiTaskResearchSources.organizationId, task.organizationId)));
         await updateMarketIntelligenceStep({ projectId: marketProject.id, organizationId: task.organizationId, stepKey: marketStep, status: "completed", resultCount: persistedEvidence?.count ?? 0 });
         marketStep = "analyzing_evidence";
-        await updateMarketIntelligenceStep({ projectId: marketProject.id, organizationId: task.organizationId, stepKey: marketStep, status: "running" });
       }
       // A Market Intelligence project has explicit, persisted search queries
       // above. Do not issue a second autonomous research-decision request and
@@ -542,12 +578,25 @@ export class TaskAiExecutionService {
       const [planSettings] = isCeoPlan ? await db.select({ generationSettings: ceoPlans.generationSettings, businessProfileSnapshot: ceoPlans.businessProfileSnapshot }).from(ceoPlans).where(and(eq(ceoPlans.taskId, task.id), eq(ceoPlans.organizationId, task.organizationId))).limit(1) : [];
       const effective = planSettings ? resolveGenerationSettings(planSettings.generationSettings) : null;
       const maxOutputTokens = effective?.maxOutputTokens ?? (isCeoPlan ? CEO_PLAN_MAX_OUTPUT_TOKENS : isStrategicReview ? 4_000 : MAX_OUTPUT_TOKENS);
+      const generate = async () => {
+      if (!await this.hasClaim(task, executionToken)) throw new TaskCancelledError();
       const reservation = await this.quota.reserve(task.organizationId, Math.max(1, Math.ceil(Buffer.byteLength(prompt, "utf8") / 2) + maxOutputTokens));
       if (reservation.limited && !reservation.allowed) throw new TaskProviderError("Đã vượt quota token AI của Organization.", false);
       if (reservation.limited) reservationIds.push(reservation.reservationId);
       if (isCeoPlan) this.logger.log(JSON.stringify({ event: "ceo_plan.generation_started", taskId: task.id, organizationId: task.organizationId }));
-      let result = await this.request(runtime, prompt, maxOutputTokens, (effective?.timeoutSeconds ?? (isCeoPlan ? CEO_PLAN_TIMEOUT_MS / 1000 : TIMEOUT_MS / 1000)) * 1000);
-      usageEntries.push({ usage: result.usage, purpose: isCeoPlan ? "ceo_planning_generation" : isStrategicReview ? "strategic_review" : "market_research_task" });
+      const generated = await this.request(runtime!, prompt, maxOutputTokens, (effective?.timeoutSeconds ?? (isCeoPlan ? CEO_PLAN_TIMEOUT_MS / 1000 : TIMEOUT_MS / 1000)) * 1000);
+      usageEntries.push({ usage: generated.usage, purpose: isCeoPlan ? "ceo_planning_generation" : isStrategicReview ? "strategic_review" : "market_research_task" });
+      return generated;
+      };
+      let result: { text: string; usage: Usage };
+      if (marketProject) {
+        const analysis = await researchCheckpoint(checkpointIdentity(), "analyzing_evidence",
+          { prompt, provider: runtime.provider, modelId: runtime.modelId, maxOutputTokens },
+          (v): v is { text: string; usage: Usage } => typeof v.text === "string" && v.text.trim().length > 0 && typeof v.usage === "object" && v.usage !== null,
+          generate);
+        result = analysis.output;
+        if (analysis.reused) await this.event(task.id, task.organizationId, "checkpoint_reused", "Đã khôi phục kết quả phân tích đã lưu; không gọi AI hoặc tính usage mới.");
+      } else result = await generate();
       if (isCeoPlan) {
         let structured = extractCeoStructuredPlan(result.text);
         if ("error" in structured) {
@@ -596,18 +645,18 @@ export class TaskAiExecutionService {
         await this.event(task.id, task.organizationId, "strategic_review_completed", "Strategic Reviewer đã hoàn tất đánh giá.");
       }
       if (marketProject) {
-        await updateMarketIntelligenceStep({ projectId: marketProject.id, organizationId: task.organizationId, stepKey: "analyzing_evidence", status: "completed" });
         marketStep = "saving_report";
         await updateMarketIntelligenceStep({ projectId: marketProject.id, organizationId: task.organizationId, stepKey: marketStep, status: "running" });
-        await db.insert(marketIntelligenceReports).values({ id: randomUUID(), organizationId: task.organizationId, projectId: marketProject.id, taskId: task.id, content: result.text, structuredReport: this.marketStructuredReport(result.text, marketEvidence ?? []) }).onConflictDoUpdate({ target: marketIntelligenceReports.projectId, set: { content: result.text, structuredReport: this.marketStructuredReport(result.text, marketEvidence ?? []) } });
+        const project = marketProject;
+        await checkpointMutation(checkpointIdentity(), async (tx) => {
+          await tx.insert(marketIntelligenceReports).values({ id: randomUUID(), organizationId: task.organizationId, projectId: project.id, taskId: task.id, content: result.text, structuredReport: this.marketStructuredReport(result.text, marketEvidence ?? []) }).onConflictDoUpdate({ target: marketIntelligenceReports.projectId, set: { content: result.text, structuredReport: this.marketStructuredReport(result.text, marketEvidence ?? []) } });
+          await tx.update(aiTasks).set({ status: "completed", result: result.text, error: null, executionToken: null, leaseExpiresAt: null, completedAt: new Date(), updatedAt: new Date() }).where(and(eq(aiTasks.id, task.id), eq(aiTasks.organizationId, task.organizationId)));
+          await tx.update(marketIntelligenceJobSteps).set({ status: "completed", completedAt: new Date(), updatedAt: new Date(), output: { reportProjectId: project.id } }).where(and(eq(marketIntelligenceJobSteps.projectId, project.id), eq(marketIntelligenceJobSteps.organizationId, task.organizationId), eq(marketIntelligenceJobSteps.stepKey, "saving_report")));
+          await tx.update(marketIntelligenceProjects).set({ status: "completed", progressPercent: 100, completedSteps: 6, completedAt: new Date(), lastError: null, updatedAt: new Date() }).where(and(eq(marketIntelligenceProjects.id, project.id), eq(marketIntelligenceProjects.organizationId, task.organizationId)));
+        });
       }
-      const completed = await db.update(aiTasks).set({ status: "completed", result: result.text, error: null, executionToken: null, leaseExpiresAt: null, completedAt: new Date(), updatedAt: new Date() }).where(and(eq(aiTasks.id, task.id), eq(aiTasks.organizationId, task.organizationId), eq(aiTasks.executionToken, executionToken), ne(aiTasks.status, "cancelled"))).returning({ id: aiTasks.id });
+      const completed = marketProject ? [{ id: task.id }] : await db.update(aiTasks).set({ status: "completed", result: result.text, error: null, executionToken: null, leaseExpiresAt: null, completedAt: new Date(), updatedAt: new Date() }).where(and(eq(aiTasks.id, task.id), eq(aiTasks.organizationId, task.organizationId), eq(aiTasks.executionToken, executionToken), ne(aiTasks.status, "cancelled"))).returning({ id: aiTasks.id });
       if (completed.length) {
-        if (marketProject) {
-          // 100% is published only when both the report and the authoritative
-          // Task terminal state have been persisted (cancellation may race us).
-          await completeMarketIntelligenceRun({ projectId: marketProject.id, organizationId: task.organizationId });
-        }
         // Record only after the terminal state is stored. A BullMQ retry will
         // then observe `completed` and cannot create a duplicate usage entry.
         usageReliable = (await Promise.all(usageEntries.map((entry) => this.usage.record({ organizationId: task.organizationId, provider: runtime!.provider, modelId: runtime!.modelId, purpose: entry.purpose, status: "success", inputTokens: token(entry.usage.input), outputTokens: token(entry.usage.output), totalTokens: token(entry.usage.total), latencyMs: Date.now() - started })))).every(Boolean);
@@ -620,7 +669,7 @@ export class TaskAiExecutionService {
         usageReliable = false;
       }
     } catch (error) {
-      if (error instanceof TaskCancelledError) {
+      if (error instanceof TaskCancelledError || error instanceof ResearchLeaseLostError) {
         usageReliable = false;
         if (marketProject) await db.update(marketIntelligenceProjects).set({ status: "cancelled", completedAt: new Date(), lastHeartbeatAt: new Date(), updatedAt: new Date() }).where(and(eq(marketIntelligenceProjects.taskId, task.id), eq(marketIntelligenceProjects.organizationId, task.organizationId), eq(marketIntelligenceProjects.status, "running")));
         return;
@@ -634,7 +683,6 @@ export class TaskAiExecutionService {
         ...safeExecutionFailure(error),
       }), error instanceof Error ? error.stack?.split("\n").slice(1, 7).join("\n") : undefined);
       if (error instanceof TaskProviderError && error.retryable && !finalAttempt) {
-        if (marketProject) await failMarketIntelligenceRun({ projectId: marketProject.id, organizationId: task.organizationId, stepKey: marketStep, error: message, terminal: false });
         // A request can have returned tokens before a later phase fails (for
         // example the one permitted CEO JSON repair). Account for those tokens
         // now; the next BullMQ attempt has a new execution token and must not
@@ -655,8 +703,11 @@ export class TaskAiExecutionService {
         }
         // Keep a short queue lease during BullMQ backoff. Dashboard polling
         // must not enqueue a second recovery job before this retry runs.
-        const released = await db.update(aiTasks).set({ status: "queued", executionToken: null, leaseExpiresAt: new Date(Date.now() + LEASE_MS), updatedAt: new Date() }).where(and(eq(aiTasks.id, task.id), eq(aiTasks.organizationId, task.organizationId), eq(aiTasks.executionToken, executionToken))).returning({ id: aiTasks.id });
-        if (released.length) await this.event(task.id, task.organizationId, "retrying", `${message} Worker sẽ thử lại.`);
+        const released = await db.update(aiTasks).set({ status: "queued", executionToken: null, leaseExpiresAt: new Date(Date.now() + aiTaskBackoff(attempt, error, 1) + LEASE_MS), updatedAt: new Date() }).where(and(eq(aiTasks.id, task.id), eq(aiTasks.organizationId, task.organizationId), eq(aiTasks.executionToken, executionToken))).returning({ id: aiTasks.id });
+        if (released.length) {
+          if (marketProject) await failMarketIntelligenceRun({ projectId: marketProject.id, organizationId: task.organizationId, stepKey: marketStep, error: message, terminal: false });
+          await this.event(task.id, task.organizationId, "retrying", `${message} Worker sẽ thử lại có giới hạn sau thời gian chờ; giữ các checkpoint hợp lệ.`);
+        }
         else usageReliable = false;
         throw error;
       }

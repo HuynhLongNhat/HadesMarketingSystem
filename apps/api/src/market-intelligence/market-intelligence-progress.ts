@@ -43,8 +43,6 @@ export async function updateMarketIntelligenceStep(input: { projectId: string; o
 export async function startMarketIntelligenceRun(input: { projectId: string; organizationId: string; attemptCount: number; maxAttempts: number; executionTimeoutAt: Date }) {
   const now = new Date();
   await db.update(marketIntelligenceProjects).set({ status: "running", startedAt: now, lastHeartbeatAt: now, attemptCount: input.attemptCount, maxAttempts: input.maxAttempts, executionTimeoutAt: input.executionTimeoutAt, lastError: null, updatedAt: now }).where(and(eq(marketIntelligenceProjects.id, input.projectId), eq(marketIntelligenceProjects.organizationId, input.organizationId)));
-  await updateMarketIntelligenceStep({ projectId: input.projectId, organizationId: input.organizationId, stepKey: "preparing", status: "completed" });
-  await updateMarketIntelligenceStep({ projectId: input.projectId, organizationId: input.organizationId, stepKey: "building_queries", status: "running" });
 }
 
 export async function completeMarketIntelligenceRun(input: { projectId: string; organizationId: string }) {

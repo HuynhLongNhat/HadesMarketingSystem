@@ -1,5 +1,7 @@
 "use client";
 
+import { resumeMarketResearch, type ResearchCheckpointMetadata } from "@/lib/market-intelligence-api";
+
 import {
   useCallback,
   useEffect,
@@ -641,11 +643,12 @@ function ResearchDetail({
   refreshing: boolean;
   onBack: () => void;
   onRefresh: () => void;
-  onManage: (action: "cancel" | "retry") => void;
+  onManage: (action: "cancel" | "retry", refreshAgentConfiguration?: boolean) => void;
 }) {
   const [tab, setTab] = useState<DetailTab>(
     detail.report ? "report" : "progress",
   );
+  const [refreshAgentConfiguration, setRefreshAgentConfiguration] = useState(false);
   const activeStatus = detail.task?.status ?? detail.status;
   const extracted = detail.sources.filter(
     (source) => source.extractionStatus === "retrieved",
@@ -708,10 +711,10 @@ function ResearchDetail({
               <Button
                 size="sm"
                 disabled={refreshing}
-                onClick={() => onManage("retry")}
+                onClick={() => onManage("retry", refreshAgentConfiguration)}
               >
                 <RefreshCw className="size-4" />
-                Thử lại
+                Tiếp tục từ bước thất bại
               </Button>
             )}
           </div>
@@ -723,6 +726,11 @@ function ResearchDetail({
           <div>
             <p className="font-medium">Nghiên cứu chưa hoàn thành</p>
             <p className="mt-1">{detail.task?.error ?? detail.lastError}</p>
+            <p className="mt-2 text-muted-foreground">Bằng chứng và lịch sử đã lưu được giữ lại. Các checkpoint còn hợp lệ sẽ được sử dụng lại, không gọi tìm kiếm hoặc AI cho bước đã hoàn thành. Dữ liệu checkpoint thiếu sẽ được khôi phục từ nguồn đã lưu nếu có.</p>
+            <label className="mt-3 flex items-start gap-2 text-foreground">
+              <input type="checkbox" checked={refreshAgentConfiguration} onChange={(event) => setRefreshAgentConfiguration(event.target.checked)} disabled={refreshing} className="mt-1" />
+              Dùng cấu hình Agent hiện tại (chọn sau khi sửa mô hình/kết nối AI). Nếu không chọn, giữ cấu hình của lần chạy ban đầu.
+            </label>
           </div>
         </div>
       )}
@@ -834,7 +842,9 @@ function ResearchDetail({
               </CardHeader>
               <CardContent>
                 <ol className="space-y-0">
-                  {detail.steps.map((step, index) => (
+                  {detail.steps.map((rawStep, index) => {
+                    const step = rawStep as typeof rawStep & ResearchCheckpointMetadata;
+                    return (
                     <li
                       key={step.id}
                       className="relative grid grid-cols-[24px_minmax(0,1fr)] gap-3 pb-5 last:pb-0"
@@ -879,9 +889,16 @@ function ResearchDetail({
                             {step.safeError}
                           </p>
                         )}
+                        <p className="mt-2 text-xs text-muted-foreground">Số lần thực thi: {step.attemptCount ?? 0}{(step.reusedCount ?? 0) > 0 ? ` · Đã dùng lại checkpoint ${step.reusedCount} lần` : ""}</p>
+                        {step.status === "failed" && activeStatus === "failed" && (
+                          <Button className="mt-3" size="sm" disabled={refreshing} onClick={() => onManage("retry", refreshAgentConfiguration)}>
+                            {refreshing ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+                            Thử lại từ bước {step.sequence}
+                          </Button>
+                        )}
                       </div>
                     </li>
-                  ))}
+                  ); })}
                 </ol>
               </CardContent>
             </Card>
@@ -1001,8 +1018,8 @@ export function MarketIntelligenceView() {
     }, 3_000);
     return () => window.clearInterval(id);
   }, [selectedTaskStatus, load, open]);
-  const manageJob = async (action: "cancel" | "retry") => {
-    if (!selected) return;
+  const manageJob = async (action: "cancel" | "retry", refreshAgentConfiguration = false) => {
+    if (!selected || refreshing) return;
     setRefreshing(true);
     try {
       if (action === "cancel") {
@@ -1011,8 +1028,8 @@ export function MarketIntelligenceView() {
         await load(true);
         await open(selected.id, true);
       } else {
-        const project = await marketIntelligenceApi.retry(selected.id);
-        toast.success("Đã tạo lần nghiên cứu mới.");
+        const project = await resumeMarketResearch(selected.id, refreshAgentConfiguration);
+        toast.success("Đã đưa yêu cầu tiếp tục vào hàng đợi. Dữ liệu đã thu thập được giữ lại.");
         await load(true);
         await open(project.id, true);
       }

@@ -35,6 +35,7 @@ import { JobsService } from "./jobs.service.js";
 import { TaskAiExecutionService } from "../tasks/task-ai-execution.service.js";
 import { parseAiTaskJobData } from "./ai-task-job.js";
 import { DepartmentsService } from "../departments/departments.service.js";
+import { aiTaskBackoff } from "./ai-task-backoff.js";
 
 import {
   GoogleDriveIngestionService,
@@ -50,7 +51,7 @@ interface TenantTaskPayload {
   message: string;
 }
 
-@Processor(DEFAULT_QUEUE)
+@Processor(DEFAULT_QUEUE, { settings: { backoffStrategy: (attemptsMade, _type, error) => aiTaskBackoff(attemptsMade, error) } })
 export class JobsProcessor extends WorkerHost {
   private readonly logger = new Logger(
     JobsProcessor.name,

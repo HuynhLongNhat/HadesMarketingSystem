@@ -21,6 +21,10 @@ export const marketIntelligenceJobSteps = pgTable("market_intelligence_job_steps
   id: text("id").primaryKey(), organizationId: text("organization_id").notNull().references(() => organization.id, { onDelete: "cascade" }), projectId: text("project_id").notNull().references(() => marketIntelligenceProjects.id, { onDelete: "cascade" }),
   stepKey: varchar("step_key", { length: 64 }).notNull(), title: varchar("title", { length: 160 }).notNull(), weight: integer("weight").notNull(), sequence: integer("sequence").notNull(), status: varchar("status", { length: 16, enum: MARKET_INTELLIGENCE_JOB_STEP_STATUSES }).notNull().default("pending"), agentName: varchar("agent_name", { length: 160 }),
   startedAt: timestamp("started_at", { withTimezone: true }), completedAt: timestamp("completed_at", { withTimezone: true }), resultCount: integer("result_count"), safeError: text("safe_error"), createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(), updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  checkpointVersion: integer("checkpoint_version"), inputHash: varchar("input_hash", { length: 64 }),
+  output: jsonb("output").$type<Record<string, unknown> | null>(),
+  attemptCount: integer("attempt_count").notNull().default(0), reusedCount: integer("reused_count").notNull().default(0),
+  safeErrorCode: varchar("safe_error_code", { length: 64 }), provider: varchar("provider", { length: 32 }),
 }, (t) => [uniqueIndex("market_intelligence_job_steps_project_key_uq").on(t.projectId, t.stepKey), uniqueIndex("market_intelligence_job_steps_project_sequence_uq").on(t.projectId, t.sequence), index("market_intelligence_job_steps_org_project_idx").on(t.organizationId, t.projectId)]);
 
 export const marketIntelligenceSourceConfigs = pgTable("market_intelligence_source_configs", {

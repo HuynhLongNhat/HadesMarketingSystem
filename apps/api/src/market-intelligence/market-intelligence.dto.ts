@@ -1,4 +1,8 @@
-import { ArrayMaxSize, IsArray, IsIn, IsInt, IsOptional, IsString, IsUUID, Max, MaxLength, Min } from "class-validator";
+import { ArrayMaxSize, IsArray, IsBoolean, IsIn, IsInt, IsOptional, IsString, IsUUID, Max, MaxLength, Min } from "class-validator";
+
+export class ResumeMarketResearchDto {
+  @IsOptional() @IsBoolean() refreshAgentConfiguration?: boolean;
+}
 
 export class CreateMarketIntelligenceProjectDto {
   @IsString() @MaxLength(200) title!: string;

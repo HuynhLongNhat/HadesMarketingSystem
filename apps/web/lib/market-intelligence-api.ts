@@ -1,4 +1,8 @@
 import { apiFetch } from "./api-client";
+export function resumeMarketResearch(id: string, refreshAgentConfiguration = false) {
+  return apiFetch<MarketIntelligenceProject>(`/market-intelligence/${encodeURIComponent(id)}/resume`, { method: "POST", body: JSON.stringify({ refreshAgentConfiguration }) });
+}
+export type ResearchCheckpointMetadata = { attemptCount?: number; reusedCount?: number; checkpointVersion?: number | null };
 export type MarketIntelligenceProject = { id:string; taskId:string; title:string; industry:string; market:string; targetAudience:string|null; objective:string; keywords:string[]; maxSources:number; researchProvider:string; status:"queued"|"running"|"completed"|"failed"|"cancelled"; progressPercent:number; currentStep:string|null; totalSteps:number; completedSteps:number; startedAt:string|null; completedAt:string|null; lastHeartbeatAt:string|null; attemptCount:number; maxAttempts:number; lastError:string|null; createdAt:string; updatedAt:string };
 export type MarketIntelligenceJobStep = { id:string; stepKey:string; title:string; sequence:number; status:"pending"|"running"|"completed"|"failed"|"skipped"; agentName:string|null; startedAt:string|null; completedAt:string|null; resultCount:number|null; safeError:string|null };
 export type MarketIntelligenceEvent = { id:string; type:string; message:string; createdAt:string };

@@ -65,10 +65,12 @@ export class MarketIntelligenceService {
     await db.update(marketIntelligenceProjects).set({ status: "cancelled", completedAt: new Date(), updatedAt: new Date() }).where(and(eq(marketIntelligenceProjects.id, id), eq(marketIntelligenceProjects.organizationId, ctx.organizationId)));
     return { cancelled: true };
   }
-  async retry(ctx: RequestContext, id: string) {
+  async retry(ctx: RequestContext, id: string, refreshAgentConfiguration = false) {
     const detail = await this.get(ctx, id);
     if (detail.task?.status !== "failed") throw new BadRequestException("Chỉ có thể thử lại dự án đã thất bại.");
     if (!detail.task.agentId) throw new BadRequestException("Dự án cũ không có Research Agent để thử lại an toàn.");
-    return this.create(ctx, { title: detail.title, industry: detail.industry, market: detail.market, targetAudience: detail.targetAudience ?? undefined, objective: detail.objective, maxSources: detail.maxSources, researchProvider: detail.researchProvider as "searxng" | "tavily", researchAgentId: detail.task.agentId, keywords: detail.keywords, sourceUrls: detail.configuredSources.map((source) => source.url) });
+    await this.tasks.resumeResearch(ctx, detail.taskId, refreshAgentConfiguration);
+    const [project] = await db.update(marketIntelligenceProjects).set({ status: "queued", completedAt: null, lastError: null, updatedAt: new Date() }).where(and(eq(marketIntelligenceProjects.id, id), eq(marketIntelligenceProjects.organizationId, ctx.organizationId), eq(marketIntelligenceProjects.status, "failed"))).returning();
+    return project ?? detail;
   }
 }
