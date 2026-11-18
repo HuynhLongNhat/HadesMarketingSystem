@@ -114,6 +114,16 @@ export class ModelCatalogService {
     }));
   }
 
+  /** Offline choices are suggestions, not proof that a credential can run a model. */
+  private readonly googleOfflineModels: CatalogModel[] = [
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+  ].map((id) => ({
+    id, name: id, provider: "google", contextWindow: null,
+    inputPricePerMillion: null, outputPricePerMillion: null,
+    supportsVision: false, supportsTools: false,
+  }));
+
   async listModels(
     provider: string,
     context?: RequestContext,
@@ -172,20 +182,28 @@ export class ModelCatalogService {
       return cached.data;
     }
 
-    const models =
-      provider === "openrouter"
+    try {
+      const models = provider === "openrouter"
         ? await this.getOpenRouterModels()
-        : await this.getLiteLLMModels(
-            provider,
-            definition.catalogProvider,
-          );
+        : await this.getLiteLLMModels(provider, definition.catalogProvider);
 
-    this.cache.set(provider, {
-      data: models,
-      expiresAt: Date.now() + 15 * 60 * 1000,
-    });
-
-    return models;
+      if (models.length === 0) {
+        throw new BadGatewayException("External model catalog returned no models");
+      }
+      this.cache.set(provider, {
+        data: models,
+        expiresAt: Date.now() + 15 * 60 * 1000,
+      });
+      return models;
+    } catch (error) {
+      // Keep the last successfully loaded catalog available during a transient outage.
+      // Cache is process-local; it is never shared across tenant-specific Groq keys.
+      if (cached?.data.length) return cached.data;
+      // Gemini has a small offline picker so a LiteLLM 502 cannot block agent editing.
+      // These IDs are suggestions only: availability is checked when a task executes.
+      if (provider === "google") return this.googleOfflineModels;
+      throw error;
+    }
   }
 
   async validateModel(
