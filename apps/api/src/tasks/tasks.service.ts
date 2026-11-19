@@ -15,11 +15,13 @@ export class TasksService {
   constructor(private readonly jobs: JobsService) {}
 
   private queueLeaseExpiresAt() { return new Date(Date.now() + QUEUE_CLAIM_TIMEOUT_MS); }
-  private async event(taskId: string, organizationId: string, type: string, message: string) {
-    await db.insert(aiTaskEvents).values({ id: randomUUID(), taskId, organizationId, type, message });
+  private async event(taskId: string, organizationId: string, type: string, message: string, store: Pick<typeof db, "insert"> = db) {
+    await store.insert(aiTaskEvents).values({ id: randomUUID(), taskId, organizationId, type, message });
   }
 
-  async create(ctx: RequestContext, dto: CreateTaskDto, options: { enqueue?: boolean; webResearchEnabled?: boolean; researchProvider?: string; runtime?: { connectionId: string; modelId: string }; deferredExecutionToken?: string } = {}) {
+  async create(ctx: RequestContext, dto: CreateTaskDto, options: { store?: Pick<typeof db, "select" | "insert">; enqueue?: boolean; webResearchEnabled?: boolean; researchProvider?: string; runtime?: { connectionId: string; modelId: string }; deferredExecutionToken?: string } = {}) {
+    const store = options.store ?? db;
+    if (options.store && options.enqueue !== false) throw new Error("Transactional task creation must enqueue after commit");
     const title = dto.title.trim(), description = dto.description.trim();
     if (!title || !description) throw new BadRequestException("Task title and description are required");
     // New Agent tasks let the configured model decide at execution time whether
@@ -28,31 +30,31 @@ export class TasksService {
     let connectionId: string, modelId: string;
     let agentSnapshot: Pick<typeof aiTasks.$inferInsert, "agentId" | "agentName" | "agentRole" | "agentSystemPrompt" | "agentConnectionId" | "agentModelId"> = {};
     if (options.runtime) {
-      const [connection] = await db.select({ id: aiProviderConnections.id }).from(aiProviderConnections).where(and(eq(aiProviderConnections.organizationId, ctx.organizationId), eq(aiProviderConnections.id, options.runtime.connectionId), eq(aiProviderConnections.enabled, true))).limit(1);
+      const [connection] = await store.select({ id: aiProviderConnections.id }).from(aiProviderConnections).where(and(eq(aiProviderConnections.organizationId, ctx.organizationId), eq(aiProviderConnections.id, options.runtime.connectionId), eq(aiProviderConnections.enabled, true))).limit(1);
       if (!connection) throw new BadRequestException("Reviewer AI provider connection is unavailable");
       connectionId = options.runtime.connectionId;
       modelId = options.runtime.modelId;
     } else if (dto.agentId) {
-      const [agent] = await db.select().from(aiAgents).where(and(eq(aiAgents.id, dto.agentId), eq(aiAgents.organizationId, ctx.organizationId))).limit(1);
+      const [agent] = await store.select().from(aiAgents).where(and(eq(aiAgents.id, dto.agentId), eq(aiAgents.organizationId, ctx.organizationId))).limit(1);
       if (!agent) throw new BadRequestException("Selected AI agent does not belong to this organization");
       if (agent.status !== "active") throw new BadRequestException("Selected AI agent is not active");
       if (!agent.connectionId || !agent.modelId) throw new BadRequestException("Selected AI agent must have its own provider connection and model");
-      const [connection] = await db.select({ id: aiProviderConnections.id }).from(aiProviderConnections).where(and(eq(aiProviderConnections.organizationId, ctx.organizationId), eq(aiProviderConnections.id, agent.connectionId), eq(aiProviderConnections.enabled, true))).limit(1);
+      const [connection] = await store.select({ id: aiProviderConnections.id }).from(aiProviderConnections).where(and(eq(aiProviderConnections.organizationId, ctx.organizationId), eq(aiProviderConnections.id, agent.connectionId), eq(aiProviderConnections.enabled, true))).limit(1);
       if (!connection) throw new BadRequestException("Selected AI agent provider connection is unavailable");
       connectionId = agent.connectionId;
       modelId = agent.modelId;
       agentSnapshot = { agentId: agent.id, agentName: agent.name, agentRole: agent.role, agentSystemPrompt: agent.systemPrompt, agentConnectionId: agent.connectionId, agentModelId: agent.modelId };
     } else {
-      const [model] = await db.select().from(aiModelDefaults).where(and(eq(aiModelDefaults.organizationId, ctx.organizationId), eq(aiModelDefaults.purpose, "general"))).limit(1);
+      const [model] = await store.select().from(aiModelDefaults).where(and(eq(aiModelDefaults.organizationId, ctx.organizationId), eq(aiModelDefaults.purpose, "general"))).limit(1);
       if (!model) throw new BadRequestException("Configure a General AI model before creating a task");
-      const [connection] = await db.select().from(aiProviderConnections).where(and(eq(aiProviderConnections.organizationId, ctx.organizationId), eq(aiProviderConnections.id, model.connectionId), eq(aiProviderConnections.enabled, true))).limit(1);
+      const [connection] = await store.select().from(aiProviderConnections).where(and(eq(aiProviderConnections.organizationId, ctx.organizationId), eq(aiProviderConnections.id, model.connectionId), eq(aiProviderConnections.enabled, true))).limit(1);
       if (!connection) throw new BadRequestException("Configured AI provider connection is unavailable");
       connectionId = connection.id;
       modelId = model.modelId;
     }
     const id = randomUUID();
-    const [task] = await db.insert(aiTasks).values({ id, organizationId: ctx.organizationId, createdBy: ctx.userId, title, description, connectionId, modelId, ...agentSnapshot, webResearchEnabled, researchProvider: webResearchEnabled ? options.researchProvider ?? "hybrid" : null, researchPolicyVersion: webResearchEnabled ? "v2" : null, executionToken: options.deferredExecutionToken ?? null, leaseExpiresAt: options.deferredExecutionToken ? null : this.queueLeaseExpiresAt() }).returning();
-    await this.event(id, ctx.organizationId, "queued", webResearchEnabled ? `Task đang chờ Worker xử lý bởi Agent ${agentSnapshot.agentName}; Agent sẽ tự quyết định có cần Web Research.` : "Task đang chờ Worker xử lý.");
+    const [task] = await store.insert(aiTasks).values({ id, organizationId: ctx.organizationId, createdBy: ctx.userId, title, description, connectionId, modelId, ...agentSnapshot, webResearchEnabled, researchProvider: webResearchEnabled ? options.researchProvider ?? "hybrid" : null, researchPolicyVersion: webResearchEnabled ? "v2" : null, executionToken: options.deferredExecutionToken ?? null, leaseExpiresAt: options.deferredExecutionToken ? null : this.queueLeaseExpiresAt() }).returning();
+    await this.event(id, ctx.organizationId, "queued", webResearchEnabled ? `Task đang chờ Worker xử lý bởi Agent ${agentSnapshot.agentName}; Agent sẽ tự quyết định có cần Web Research.` : "Task đang chờ Worker xử lý.", store);
     if (options.enqueue !== false) await this.enqueue(task);
     return task;
   }

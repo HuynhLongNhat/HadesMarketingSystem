@@ -1,5 +1,7 @@
 
 export { db, pool } from "./client.js";
+export { assistantConversations, assistantTurns, ASSISTANT_TURN_STATUSES } from "./assistant-schema.js";
+export type { AssistantConversation, AssistantTurn } from "./assistant-schema.js";
 
 export {
   widgetSettings,
@@ -232,3 +234,4 @@ export type {
   WebsiteProjectType,
   WebsiteProjectConfig,
 } from "./website-services-schema.js";
+export { assistantTaskLinks } from "./assistant-task-schema.js";

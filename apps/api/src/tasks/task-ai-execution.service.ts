@@ -507,36 +507,38 @@ export class TaskAiExecutionService {
         const evidenceInput = { queries, provider: marketProject.researchProvider, maxSources: marketProject.maxSources };
         const searchCheckpoint = await researchCheckpoint(checkpointIdentity(), marketStep, evidenceInput,
           (v): v is { runIds: string[] } => Array.isArray(v.runIds) && v.runIds.length > 0 && v.runIds.every((id) => typeof id === "string"), async () => {
-        await updateMarketIntelligenceStep({ projectId: marketProject.id, organizationId: task.organizationId, stepKey: marketStep, status: "running" });
+        const project = marketProject!;
+        let collected: ResearchEvidence[] = [];
+        await updateMarketIntelligenceStep({ projectId: project.id, organizationId: task.organizationId, stepKey: "searching_sources", status: "running" });
         // Existing completed runs are durable evidence, including pre-checkpoint
         // projects. Never repeat a successful search merely to regenerate progress.
         const savedRuns = await db.select().from(aiTaskResearchRuns).where(and(eq(aiTaskResearchRuns.taskId, task.id), eq(aiTaskResearchRuns.organizationId, task.organizationId), eq(aiTaskResearchRuns.status, "completed")));
         const covered = new Set(savedRuns.map((run) => run.query));
-        if (marketProject.researchProvider !== "tavily" && covered.has(queries.join(" | ").slice(0, 500))) {
-          marketEvidence = await this.persistedMarketEvidence(task);
-        } else if (marketProject.researchProvider === "tavily") {
-          let remaining = marketProject.maxSources;
-          marketEvidence = await this.persistedMarketEvidence(task);
-          remaining -= marketEvidence.reduce((n, evidence) => n + evidence.sources.length, 0);
+        if (project.researchProvider !== "tavily" && covered.has(queries.join(" | ").slice(0, 500))) {
+          collected = await this.persistedMarketEvidence(task);
+        } else if (project.researchProvider === "tavily") {
+          let remaining = project.maxSources;
+          collected = await this.persistedMarketEvidence(task);
+          remaining -= collected.reduce((n, evidence) => n + evidence.sources.length, 0);
           for (const query of queries) {
             if (remaining <= 0) break;
             if (covered.has(query)) continue;
             const evidence = await this.webResearch(task, executionToken, query, true, "tavily", remaining);
-            marketEvidence.push(evidence);
+            collected.push(evidence);
             remaining -= evidence.sources.length;
           }
         } else {
           try {
-            marketEvidence.push(await this.marketResearchWithService(task, executionToken, queries, marketProject.maxSources));
+            collected.push(await this.marketResearchWithService(task, executionToken, queries, project.maxSources));
           } catch (error) {
             if (!(error instanceof ResearchServiceError)) throw error;
             if (!this.paidFallbackAllowed()) throw new TaskProviderError(error.message, error.code === "RESEARCH_SERVICE_UNAVAILABLE");
             await this.event(task.id, task.organizationId, "research_provider_fallback", "Research Service chưa sẵn sàng; thử Search Provider trả phí kế tiếp vì đã được cho phép fallback.");
-            let remaining = marketProject.maxSources;
+            let remaining = project.maxSources;
             for (const query of queries) {
               if (remaining <= 0) break;
               const evidence = await this.webResearch(task, executionToken, query, true, undefined, remaining, ["searxng"], true);
-              marketEvidence.push(evidence);
+              collected.push(evidence);
               remaining -= evidence.sources.length;
             }
           }

@@ -1,5 +1,6 @@
 
 import { Module } from "@nestjs/common";
+import { AssistantModule } from "./assistant/assistant.module.js";
 import { BullModule } from "@nestjs/bullmq";
 
 import { HealthController } from "./health.controller.js";
@@ -26,6 +27,7 @@ import { BusinessDoctrineModule } from "./business-doctrines/business-doctrine.m
 import { MarketIntelligenceModule } from "./market-intelligence/market-intelligence.module.js";
 @Module({
   imports: [
+    AssistantModule,
     DatabaseModule,
     WidgetSettingsModule,
     BusinessProfileModule,

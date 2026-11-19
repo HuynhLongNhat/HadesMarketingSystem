@@ -69,6 +69,7 @@ const navigation: NavigationGroup[] = [
     icon: Building2,
     items: [
       { id: "dashboard", label: { vi: "Tổng quan", en: "Overview" }, icon: LayoutDashboard, href: "/" },
+      { id: "assistant", label: { vi: "Nova Assistant", en: "Nova Assistant" }, icon: Bot, href: "/assistant" },
       { id: "office", label: { vi: "Văn phòng AI", en: "AI Office" }, icon: Building2, href: "/office" },
       { id: "ceo-planning", label: { vi: "CEO AI Planning", en: "CEO AI Planning" }, icon: BrainCircuit, href: "/ceo-planning" },
       { id: "employees", label: { vi: "Nhân viên AI", en: "AI Employees" }, icon: Bot, href: "/workforce?tab=agents" },

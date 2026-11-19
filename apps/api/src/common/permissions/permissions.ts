@@ -1,6 +1,7 @@
 import type { OrganizationRole } from "../../auth/request-context.js";
 
 export const PERMISSIONS = {
+  ASSISTANT_USE: "assistant:use",
   ORGANIZATION_READ: "organization:read",
   ORGANIZATION_UPDATE: "organization:update",
   ORGANIZATION_DELETE: "organization:delete",
@@ -62,6 +63,7 @@ export const ROLE_PERMISSIONS: Record<OrganizationRole, readonly Permission[]> =
     ),
 
     member: [
+      PERMISSIONS.ASSISTANT_USE,
       PERMISSIONS.ORGANIZATION_READ,
       PERMISSIONS.WIDGET_READ,
       PERMISSIONS.CONVERSATION_READ,

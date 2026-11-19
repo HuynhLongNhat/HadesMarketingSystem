@@ -35,10 +35,10 @@ export async function apiFetch<T>(
   if (!response.ok) {
     const payload = (await response.json().catch(() => null)) as {
       message?: string | string[];
+      error?: { message?: string | string[] };
     } | null;
-    const message = Array.isArray(payload?.message)
-      ? payload.message.join(" ")
-      : payload?.message;
+    const rawMessage = payload?.error?.message ?? payload?.message;
+    const message = Array.isArray(rawMessage) ? rawMessage.join(" ") : rawMessage;
 
     throw new ApiError(
       response.status,
