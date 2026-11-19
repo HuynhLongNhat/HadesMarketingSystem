@@ -36,6 +36,7 @@ export type AgentCategory = (typeof AGENT_CATEGORIES)[number];
 
 export type AgentToolConfig = {
   enabledTools: string[];
+  fallbackModels?: string[];
 };
 
 export const departments = pgTable(
