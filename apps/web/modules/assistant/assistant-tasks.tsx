@@ -416,6 +416,20 @@ export function AssistantTaskDialog({
       if (timer) window.clearInterval(timer);
     };
   }, [id, status]);
+  const resume = async () => {
+    if (!id || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await assistantTasksApi.resumeResearch(id);
+      await load();
+      onChanged();
+    } catch (e) {
+      setError(message(e));
+    } finally {
+      setBusy(false);
+    }
+  };
   const cancel = async () => {
     if (!id || busy) return;
     setBusy(true);
@@ -546,6 +560,12 @@ export function AssistantTaskDialog({
               </ol>
             </section>
             <div className="flex flex-wrap justify-between gap-3">
+              {task.status === "failed" && task.webResearchEnabled && (
+                <Button variant="outline" disabled={busy} onClick={() => void resume()}>
+                  {busy ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
+                  Tiếp tục nghiên cứu
+                </Button>
+              )}
               {pending(task.status) && (
                 <Button
                   variant="outline"
