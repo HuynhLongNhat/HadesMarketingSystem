@@ -44,6 +44,11 @@ export class AssistantTasksController {
   ) {
     return this.service.create(ctx, id, input);
   }
+  @Post("tasks/:id/resume-research")
+  @RequirePermissions(PERMISSIONS.ASSISTANT_USE, PERMISSIONS.AGENT_MANAGE)
+  resumeResearch(@CurrentContext() ctx: RequestContext, @Param("id") id: string) {
+    return this.service.resumeResearch(ctx, id);
+  }
   @Post("tasks/:id/cancel")
   @RequirePermissions(PERMISSIONS.ASSISTANT_USE, PERMISSIONS.AGENT_MANAGE)
   cancel(@CurrentContext() ctx: RequestContext, @Param("id") id: string) {
