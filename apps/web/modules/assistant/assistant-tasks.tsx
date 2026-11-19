@@ -43,6 +43,7 @@ export function AssistantRecentTasks({
 }) {
   const [tasks, setTasks] = useState<AssistantTask[]>([]);
   const [error, setError] = useState("");
+  const [refreshRevision, setRefreshRevision] = useState(0);
   const active = tasks.some((task) => pending(task.status));
   useEffect(() => {
     let alive = true;
@@ -64,14 +65,26 @@ export function AssistantRecentTasks({
       alive = false;
       if (timer) window.clearInterval(timer);
     };
-  }, [revision, active]);
+  }, [revision, active, refreshRevision]);
   return (
     <section className="max-h-64 overflow-y-auto border-t p-3">
-      <h2 className="mb-2 text-xs font-medium text-muted-foreground">
-        Nhiệm vụ gần đây
-      </h2>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <h2 className="text-xs font-medium text-muted-foreground">
+          Nhiệm vụ gần đây
+        </h2>
+        <Button
+          type="button"
+          size="icon"
+          variant="ghost"
+          className="h-7 w-7"
+          aria-label="Làm mới nhiệm vụ gần đây"
+          onClick={() => setRefreshRevision((value) => value + 1)}
+        >
+          <RefreshCw className="h-3.5 w-3.5" />
+        </Button>
+      </div>
       {error ? (
-        <p className="text-xs text-destructive">{error}</p>
+        <p role="alert" className="text-xs text-destructive">{error}</p>
       ) : !tasks.length ? (
         <p className="text-xs text-muted-foreground">
           Chưa giao nhiệm vụ từ Assistant.
@@ -80,6 +93,7 @@ export function AssistantRecentTasks({
         tasks.slice(0, 12).map((task) => (
           <button
             key={task.id}
+            type="button"
             onClick={() => onOpen(task.id)}
             className="block w-full rounded-lg p-2 text-left hover:bg-muted"
           >
