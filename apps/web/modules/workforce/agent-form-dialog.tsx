@@ -64,6 +64,7 @@ interface Form {
   modelId: string;
   status: AgentStatus;
   enabledTools: string[];
+  fallbackModels: string[];
 }
 
 const empty: Form = {
@@ -76,6 +77,7 @@ const empty: Form = {
   modelId: "",
   status: "draft",
   enabledTools: [],
+  fallbackModels: [],
 };
 
 const statuses: AgentStatus[] = [
@@ -118,6 +120,7 @@ export function AgentFormDialog({
             modelId: agent.modelId ?? "",
             status: agent.status,
             enabledTools: agent.toolConfig.enabledTools,
+            fallbackModels: agent.toolConfig.fallbackModels ?? [],
           }
         : { ...empty, ...preset, enabledTools: preset?.enabledTools ?? [] },
     );
@@ -182,6 +185,10 @@ export function AgentFormDialog({
       return;
     }
 
+    if (selectedConnection?.provider === "openrouter" && form.fallbackModels.some((model) => !model.endsWith(":free") || model === form.modelId) ) {
+      toast.error("Chọn model dự phòng miễn phí hợp lệ và khác model chính.");
+      return;
+    }
     setSaving(true);
 
     const action = agent ? "update" : "create";
@@ -198,6 +205,7 @@ export function AgentFormDialog({
           modelId: form.modelId || null,
           status: form.status,
           enabledTools: form.enabledTools,
+          fallbackModels: selectedConnection?.provider === "openrouter" ? form.fallbackModels : [],
         };
 
         await workforceApi.updateAgent(agent.id, input);
@@ -416,6 +424,28 @@ export function AgentFormDialog({
                 disabled={saving}
               />
             </div>
+
+            {selectedConnection?.provider === "openrouter" && (
+              <section className="space-y-3 rounded-lg border bg-muted/20 p-4 text-sm sm:col-span-2">
+                <h3 className="font-medium">Model dự phòng (OpenRouter)</h3>
+                <p className="text-xs text-muted-foreground">Khi model chính không khả dụng, OpenRouter sẽ thử lần lượt các model miễn phí bên dưới. Không tự động dùng model trả phí.</p>
+                {form.fallbackModels.map((model, index) => (
+                  <div key={index} className="flex items-center gap-2">
+                    <div className="min-w-0 flex-1">
+                      <ModelPicker provider="openrouter" connectionId={selectedConnection.id} value={model}
+                        onChange={(value) => update("fallbackModels", form.fallbackModels.map((item, i) => i === index ? value : item))}
+                        disabled={saving} />
+                    </div>
+                    <Button type="button" variant="outline" disabled={saving} onClick={() => update("fallbackModels", form.fallbackModels.filter((_, i) => i !== index))}>Xóa</Button>
+                  </div>
+                ))}
+                <Button type="button" variant="outline" disabled={saving || form.fallbackModels.length >= 4}
+                  onClick={() => update("fallbackModels", [...form.fallbackModels, ""])}>+ Thêm model dự phòng</Button>
+                {form.fallbackModels.some((model) => model && !model.endsWith(":free")) && (
+                  <p role="alert" className="text-destructive text-xs">Chỉ chấp nhận model miễn phí có ID kết thúc bằng :free.</p>
+                )}
+              </section>
+            )}
 
             <section className="space-y-3 rounded-lg border bg-muted/20 p-4 text-sm sm:col-span-2" aria-labelledby="agent-tools-heading">
               <div>

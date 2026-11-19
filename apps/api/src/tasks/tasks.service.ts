@@ -28,7 +28,7 @@ export class TasksService {
     // current public evidence is needed. General-model tasks retain UC-00 behavior.
     const webResearchEnabled = options.webResearchEnabled ?? Boolean(dto.agentId);
     let connectionId: string, modelId: string;
-    let agentSnapshot: Pick<typeof aiTasks.$inferInsert, "agentId" | "agentName" | "agentRole" | "agentSystemPrompt" | "agentConnectionId" | "agentModelId"> = {};
+    let agentSnapshot: Pick<typeof aiTasks.$inferInsert, "agentId" | "agentName" | "agentRole" | "agentSystemPrompt" | "agentConnectionId" | "agentModelId" | "agentFallbackModels"> = {};
     if (options.runtime) {
       const [connection] = await store.select({ id: aiProviderConnections.id }).from(aiProviderConnections).where(and(eq(aiProviderConnections.organizationId, ctx.organizationId), eq(aiProviderConnections.id, options.runtime.connectionId), eq(aiProviderConnections.enabled, true))).limit(1);
       if (!connection) throw new BadRequestException("Reviewer AI provider connection is unavailable");
@@ -43,7 +43,7 @@ export class TasksService {
       if (!connection) throw new BadRequestException("Selected AI agent provider connection is unavailable");
       connectionId = agent.connectionId;
       modelId = agent.modelId;
-      agentSnapshot = { agentId: agent.id, agentName: agent.name, agentRole: agent.role, agentSystemPrompt: agent.systemPrompt, agentConnectionId: agent.connectionId, agentModelId: agent.modelId };
+      agentSnapshot = { agentId: agent.id, agentName: agent.name, agentRole: agent.role, agentSystemPrompt: agent.systemPrompt, agentConnectionId: agent.connectionId, agentModelId: agent.modelId, agentFallbackModels: agent.toolConfig.fallbackModels ?? [] };
     } else {
       const [model] = await store.select().from(aiModelDefaults).where(and(eq(aiModelDefaults.organizationId, ctx.organizationId), eq(aiModelDefaults.purpose, "general"))).limit(1);
       if (!model) throw new BadRequestException("Configure a General AI model before creating a task");
@@ -82,7 +82,7 @@ export class TasksService {
         if (!agent || agent.status !== "active" || !agent.connectionId || !agent.modelId) throw new BadRequestException("Nhân viên phải đang hoạt động và có cấu hình AI hợp lệ.");
         const [connection] = await tx.select().from(aiProviderConnections).where(and(eq(aiProviderConnections.id, agent.connectionId), eq(aiProviderConnections.organizationId, ctx.organizationId), eq(aiProviderConnections.enabled, true)));
         if (!connection) throw new BadRequestException("Kết nối AI của nhân viên không khả dụng.");
-        snapshot = { connectionId: agent.connectionId, modelId: agent.modelId, agentConnectionId: agent.connectionId, agentModelId: agent.modelId, agentName: agent.name, agentRole: agent.role, agentSystemPrompt: agent.systemPrompt };
+        snapshot = { connectionId: agent.connectionId, modelId: agent.modelId, agentConnectionId: agent.connectionId, agentModelId: agent.modelId, agentFallbackModels: agent.toolConfig.fallbackModels ?? [], agentName: agent.name, agentRole: agent.role, agentSystemPrompt: agent.systemPrompt };
       }
       const [resumed] = await tx.update(aiTasks).set({ ...snapshot, status: "queued", error: null, completedAt: null, executionToken: null, leaseExpiresAt: this.queueLeaseExpiresAt(), updatedAt: new Date() }).where(and(eq(aiTasks.id, taskId), eq(aiTasks.organizationId, ctx.organizationId), eq(aiTasks.status, "failed"))).returning();
       await tx.insert(aiTaskEvents).values({ id: randomUUID(), taskId, organizationId: ctx.organizationId, type: "research_resumed", message: refreshAgentConfiguration ? "Người dùng yêu cầu tiếp tục với cấu hình Agent hiện tại. Giữ dữ liệu nguồn; kết quả phân tích cũ sẽ được kiểm tra lại theo cấu hình mới." : "Người dùng yêu cầu tiếp tục từ checkpoint hợp lệ. Giữ lịch sử lỗi và dữ liệu nguồn." });

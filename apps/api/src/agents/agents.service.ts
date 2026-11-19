@@ -23,6 +23,14 @@ import type {
 } from "./agents.dto.js";
 import { normalizeAgentCapabilities } from "./agent-capabilities.js";
 
+function validateFallback(models: string[] | undefined, modelId: string | null | undefined) {
+  if (!models) return;
+  if (models.length && !modelId?.endsWith(":free")) throw new BadRequestException("Bật fallback miễn phí yêu cầu model chính cũng là :free.");
+  if (models.some((m) => !m.endsWith(":free") || m.length > 200 || m === modelId) || new Set(models).size !== models.length) {
+    throw new BadRequestException("Model dự phòng phải là OpenRouter :free, không trùng model chính hoặc trùng nhau.");
+  }
+}
+
 function databaseErrorCode(
   error: unknown,
 ): string | undefined {
@@ -193,6 +201,12 @@ export class AgentsService {
       );
     }
 
+    validateFallback(dto.fallbackModels, dto.modelId);
+    if (dto.fallbackModels?.length) {
+      const [connection] = await db.select({ provider: aiProviderConnections.provider }).from(aiProviderConnections)
+        .where(and(eq(aiProviderConnections.id, dto.connectionId ?? ""), eq(aiProviderConnections.organizationId, context.organizationId))).limit(1);
+      if (connection?.provider !== "openrouter") throw new BadRequestException("Fallback chỉ hỗ trợ OpenRouter.");
+    }
     const enabledTools = normalizeAgentCapabilities(dto.enabledTools);
 
     try {
@@ -227,6 +241,7 @@ export class AgentsService {
           toolConfig: {
             enabledTools:
               enabledTools ?? [],
+            fallbackModels: dto.fallbackModels ?? [],
           },
         })
         .returning();
@@ -293,6 +308,12 @@ export class AgentsService {
       );
     }
 
+    validateFallback(dto.fallbackModels, modelId);
+    if (dto.fallbackModels?.length) {
+      const [connection] = await db.select({ provider: aiProviderConnections.provider }).from(aiProviderConnections)
+        .where(and(eq(aiProviderConnections.id, connectionId ?? ""), eq(aiProviderConnections.organizationId, context.organizationId))).limit(1);
+      if (connection?.provider !== "openrouter") throw new BadRequestException("Fallback chỉ hỗ trợ OpenRouter.");
+    }
     const enabledTools = normalizeAgentCapabilities(dto.enabledTools);
 
     const changes: Partial<
@@ -346,9 +367,10 @@ export class AgentsService {
       changes.status = dto.status;
     }
 
-    if (dto.enabledTools !== undefined) {
+    if (dto.enabledTools !== undefined || dto.fallbackModels !== undefined) {
       changes.toolConfig = {
-        enabledTools: enabledTools!,
+        enabledTools: enabledTools ?? existing.toolConfig.enabledTools,
+        fallbackModels: dto.fallbackModels ?? existing.toolConfig.fallbackModels ?? [],
       };
     }
 
