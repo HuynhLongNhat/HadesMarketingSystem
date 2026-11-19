@@ -3,7 +3,7 @@
 
 import { useState } from "react";
 import Image from "next/image";
-import { CopyIcon, CheckIcon } from "lucide-react";
+import { CopyIcon, CheckIcon, ExternalLinkIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { authClient } from "@/lib/auth-client";
@@ -147,6 +147,39 @@ export const IntegrationsView = () => {
               </p>
             </div>
           </div>
+
+          <Separator className="my-8" />
+
+          <section className="space-y-4 rounded-lg border bg-background p-5">
+            <div className="space-y-2">
+              <h2 className="text-lg font-semibold">Kết nối ChatGPT (V1 thử nghiệm)</h2>
+              <p className="text-sm text-muted-foreground">
+                Hades đã có công cụ MCP nội bộ, nhưng chưa có kết nối ChatGPT hoàn chỉnh.
+                Không cần nhập API key OpenAI. Việc ChatGPT có thể đọc hoặc tạo Task
+                phụ thuộc quyền MCP của gói tài khoản và cấu hình xác thực.
+              </p>
+            </div>
+            <div className="rounded-md bg-muted p-3 text-sm">
+              <strong>Trạng thái: Chưa kết nối.</strong>
+              <p className="mt-1 text-muted-foreground">
+                MCP hiện sử dụng phiên đăng nhập Hades, chưa hỗ trợ OAuth từ ChatGPT.
+                Không sử dụng đường dẫn nội bộ này làm endpoint công khai.
+              </p>
+            </div>
+            <p className="text-sm">
+              ChatGPT cá nhân có thể chưa được cấp quyền gọi công cụ ghi dữ liệu.
+              Trong khi chờ hỗ trợ, bạn vẫn có thể tạo và theo dõi nhiệm vụ trực tiếp
+              trong Hades.
+            </p>
+            <a
+              href="https://help.openai.com/en/articles/12584461-connecting-custom-mcp-servers-in-chatgpt"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-2 text-sm font-medium underline underline-offset-4"
+            >
+              Xem yêu cầu kết nối MCP chính thức <ExternalLinkIcon className="size-4" />
+            </a>
+          </section>
 
           <Separator className="my-8" />
 
