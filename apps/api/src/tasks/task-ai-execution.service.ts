@@ -53,6 +53,19 @@ type Usage = { input?: unknown; output?: unknown; total?: unknown };
 type Runtime = { provider: string; protocol: "openai" | "anthropic" | "google"; endpoint: string; apiKey: string; modelId: string };
 type ResearchDecision = { useResearch: boolean; query: string | null; fallback: boolean };
 
+/**
+ * Opt-in OpenRouter model fallback. Never silently add a paid model.
+ * Comma-separated free model IDs are configured by the operator; the
+ * OpenRouter catalog may change and must be checked before enabling.
+ */
+export function openRouterTaskModels(provider: string, primary: string, configured = process.env.OPENROUTER_TASK_FALLBACK_MODELS): string[] | null {
+  if (provider !== "openrouter" || !configured?.trim()) return null;
+  const fallback = configured.split(",").map((model) => model.trim()).filter((model) => model && model.endsWith(":free"));
+  const models = [...new Set([primary, ...fallback])].slice(0, 5);
+  return models.length > 1 ? models : null;
+}
+
+
 export function isTruncatedFinishReason(value: unknown) {
   return typeof value === "string" && ["length", "max_tokens", "max_output_tokens", "MAX_TOKENS"].includes(value);
 }
@@ -353,7 +366,7 @@ export class TaskAiExecutionService {
       } else if (runtime.protocol === "google") {
         response = await fetch(runtime.endpoint, { method: "POST", headers: { "x-goog-api-key": runtime.apiKey, "Content-Type": "application/json" }, body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { temperature: 0.3, maxOutputTokens } }), signal: AbortSignal.timeout(timeoutMs), redirect: "error" });
       } else {
-        response = await fetch(runtime.endpoint, { method: "POST", headers: { Authorization: `Bearer ${runtime.apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: runtime.modelId, temperature: 0.3, max_completion_tokens: maxOutputTokens, messages: [{ role: "system", content: "Trả lời chính xác theo yêu cầu, không bịa dữ liệu." }, { role: "user", content: prompt }] }), signal: AbortSignal.timeout(timeoutMs), redirect: "error" });
+        response = await fetch(runtime.endpoint, { method: "POST", headers: { Authorization: `Bearer ${runtime.apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: runtime.modelId, ...(openRouterTaskModels(runtime.provider, runtime.modelId) ? { models: openRouterTaskModels(runtime.provider, runtime.modelId) } : {}), temperature: 0.3, max_completion_tokens: maxOutputTokens, messages: [{ role: "system", content: "Trả lời chính xác theo yêu cầu, không bịa dữ liệu." }, { role: "user", content: prompt }] }), signal: AbortSignal.timeout(timeoutMs), redirect: "error" });
       }
     } catch (error) {
       const name = error instanceof Error ? error.name : "";
@@ -405,7 +418,7 @@ export class TaskAiExecutionService {
     const instruction = `Decide whether this task requires current public web information. Return JSON only: {"use_web_research":boolean,"query":string|null}. Use web research only when current, externally verifiable information is necessary; do not use it for writing, editing, reasoning, or user-provided content.\nTitle: ${task.title}\nRequest: ${task.description}`;
     if (runtime.protocol === "openai") {
       try {
-        const response = await fetch(runtime.endpoint, { method: "POST", headers: { Authorization: `Bearer ${runtime.apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: runtime.modelId, temperature: 0, messages: [{ role: "system", content: "You decide whether to use the provided web research tool." }, { role: "user", content: instruction }], tools: [{ type: "function", function: { name: "web_research", description: "Search public web sources when current evidence is required.", parameters: { type: "object", additionalProperties: false, properties: { query: { type: "string" } }, required: ["query"] } } }], tool_choice: "auto" }), signal: AbortSignal.timeout(TIMEOUT_MS), redirect: "error" });
+        const response = await fetch(runtime.endpoint, { method: "POST", headers: { Authorization: `Bearer ${runtime.apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: runtime.modelId, ...(openRouterTaskModels(runtime.provider, runtime.modelId) ? { models: openRouterTaskModels(runtime.provider, runtime.modelId) } : {}), temperature: 0, messages: [{ role: "system", content: "You decide whether to use the provided web research tool." }, { role: "user", content: instruction }], tools: [{ type: "function", function: { name: "web_research", description: "Search public web sources when current evidence is required.", parameters: { type: "object", additionalProperties: false, properties: { query: { type: "string" } }, required: ["query"] } } }], tool_choice: "auto" }), signal: AbortSignal.timeout(TIMEOUT_MS), redirect: "error" });
         if (response.ok) {
           const body = await response.json() as { choices?: Array<{ message?: { tool_calls?: Array<{ function?: { name?: string; arguments?: string } }>; content?: string } }> };
           const message = body.choices?.[0]?.message;
