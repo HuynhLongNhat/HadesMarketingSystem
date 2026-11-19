@@ -134,7 +134,7 @@ describe("AI task prompts", () => {
         { provider: "openrouter", protocol: "openai", endpoint: "https://example.invalid", apiKey: "test", modelId: "vendor/primary:free", fallbackModels: ["vendor/backup:free"] },
         { id: "task-1", organizationId: "org-1", title: "Research", description: "Check sources" });
       assert.equal(result.useResearch, false);
-      assert.match(observed.join(" "), /vendor\\/backup:free/);
+      assert.ok(observed.join(" ").includes("vendor/backup:free"));
     } finally { globalThis.fetch = previousFetch; }
   });
 
