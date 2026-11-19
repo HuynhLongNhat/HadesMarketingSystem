@@ -408,6 +408,11 @@ export class TaskAiExecutionService {
         const response = await fetch(runtime.endpoint, { method: "POST", headers: { Authorization: `Bearer ${runtime.apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: runtime.modelId, ...(runtime.provider === "openrouter" && runtime.fallbackModels?.length ? { models: [runtime.modelId, ...runtime.fallbackModels] } : {}), temperature: 0, messages: [{ role: "system", content: "You decide whether to use the provided web research tool." }, { role: "user", content: instruction }], tools: [{ type: "function", function: { name: "web_research", description: "Search public web sources when current evidence is required.", parameters: { type: "object", additionalProperties: false, properties: { query: { type: "string" } }, required: ["query"] } } }], tool_choice: "auto" }), signal: AbortSignal.timeout(TIMEOUT_MS), redirect: "error" });
         if (response.ok) {
           const body = await response.json() as { choices?: Array<{ message?: { tool_calls?: Array<{ function?: { name?: string; arguments?: string } }>; content?: string } }> };
+          const selectedModel = (body as typeof body & { model?: unknown }).model;
+          if (typeof selectedModel === "string" && selectedModel.trim()) {
+            await this.event(task.id, task.organizationId, "model_used",
+              `Bước quyết định Web Research sử dụng model ${selectedModel}${selectedModel !== runtime.modelId ? ` (model chính: ${runtime.modelId})` : ""}.`);
+          }
           const message = body.choices?.[0]?.message;
           const tool = message?.tool_calls?.find((call) => call.function?.name === "web_research");
           if (tool) {
@@ -422,6 +427,10 @@ export class TaskAiExecutionService {
       } catch (error) { if (error instanceof TaskProviderError) throw error; }
     }
     const fallback = await this.request(runtime, instruction);
+    if (fallback.actualModel) {
+      await this.event(task.id, task.organizationId, "model_used",
+        `Bước quyết định Web Research sử dụng model ${fallback.actualModel}${fallback.actualModel !== runtime.modelId ? ` (model chính: ${runtime.modelId})` : ""}.`);
+    }
     return this.parseResearchDecision(fallback.text, task);
   }
 
