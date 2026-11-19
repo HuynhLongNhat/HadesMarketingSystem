@@ -185,7 +185,7 @@ export function AgentFormDialog({
       return;
     }
 
-    if (selectedConnection?.provider === "openrouter" && form.fallbackModels.some((model) => !model.endsWith(":free") || model === form.modelId) ) {
+    if (selectedConnection?.provider === "openrouter" && form.fallbackModels.some((model) => !model.endsWith(":free") || model === form.modelId || !model.trim()) ) {
       toast.error("Chọn model dự phòng miễn phí hợp lệ và khác model chính.");
       return;
     }
@@ -225,6 +225,7 @@ export function AgentFormDialog({
             ? { modelId: form.modelId }
             : {}),
           enabledTools: form.enabledTools,
+          fallbackModels: selectedConnection?.provider === "openrouter" ? form.fallbackModels : [],
         };
 
         await workforceApi.createAgent(input);
@@ -432,7 +433,7 @@ export function AgentFormDialog({
                 {form.fallbackModels.map((model, index) => (
                   <div key={index} className="flex items-center gap-2">
                     <div className="min-w-0 flex-1">
-                      <ModelPicker provider="openrouter" connectionId={selectedConnection.id} value={model}
+                      <ModelPicker freeOnly provider="openrouter" connectionId={selectedConnection.id} value={model}
                         onChange={(value) => update("fallbackModels", form.fallbackModels.map((item, i) => i === index ? value : item))}
                         disabled={saving} />
                     </div>

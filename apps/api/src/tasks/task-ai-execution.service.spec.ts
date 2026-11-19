@@ -138,6 +138,20 @@ describe("AI task prompts", () => {
     } finally { globalThis.fetch = previousFetch; }
   });
 
+  it("does not attach fallback model list for non-OpenRouter providers", async () => {
+    const previousFetch = globalThis.fetch;
+    let payload: { models?: string[] } | undefined;
+    globalThis.fetch = (async (_input, init) => {
+      payload = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const request = Reflect.get(service(), "request") as (runtime: object, prompt: string) => Promise<unknown>;
+      await request.call(service(), { provider: "openai", protocol: "openai", endpoint: "https://provider.invalid", apiKey: "test", modelId: "gpt-test", fallbackModels: ["vendor/free:free"] }, "hello");
+      assert.equal(payload?.models, undefined);
+    } finally { globalThis.fetch = previousFetch; }
+  });
+
   it("uses a CEO-only JSON prompt and can build a single repair request without exposing it in logs", () => {
     const instance = service();
     const ceoPrompt = Reflect.get(instance, "ceoPrompt") as (task: Pick<PromptTask, "description" | "agentName" | "agentRole" | "agentSystemPrompt">) => string;
