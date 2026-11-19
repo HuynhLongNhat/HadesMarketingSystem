@@ -150,6 +150,7 @@ export class CeoPlanningService {
         businessProfile: (plan.businessProfileSnapshot as CeoPlanningContext["businessProfile"] | null) ?? { profile: null, missingFields: ["Snapshot hồ sơ doanh nghiệp không có trên kế hoạch cũ"], agents: [] },
         snapshotAt: plan.businessProfileSnapshotAt ?? plan.createdAt,
       };
+      if (!plan.ceoAgentId) throw new BadRequestException("Kế hoạch này không có CEO Agent.");
       const next = await this.createPlan(ctx, { ceoAgentId: plan.ceoAgentId, title: plan.title, objective: plan.objective, additionalContext: plan.additionalContext ?? undefined }, { parentId: plan.id, retryCount: plan.retryCount + 1, context, generationSettings: resolveGenerationSettings(plan.generationSettings), executionSource: storedExecutionSource(plan.executionSource) ?? undefined });
       await db.update(ceoPlans).set({ retryPlanId: next.id, updatedAt: new Date() }).where(and(eq(ceoPlans.id, plan.id), eq(ceoPlans.organizationId, ctx.organizationId)));
       return next;
@@ -160,9 +161,8 @@ export class CeoPlanningService {
   }
   async remove(ctx: RequestContext, id: string) {
     const plan = await this.get(ctx, id);
-    if (!plan.taskId) throw new BadRequestException("Kế hoạch nhập không có tác vụ sinh kế hoạch.");
-    const [task] = await db.select({ status: aiTasks.status }).from(aiTasks).where(and(eq(aiTasks.id, plan.taskId), eq(aiTasks.organizationId, ctx.organizationId))).limit(1);
-    if (!task || task.status === "queued" || task.status === "running") throw new BadRequestException("Không thể xóa kế hoạch đang được CEO xử lý.");
+    const [task] = plan.taskId ? await db.select({ status: aiTasks.status }).from(aiTasks).where(and(eq(aiTasks.id, plan.taskId), eq(aiTasks.organizationId, ctx.organizationId))).limit(1) : [null];
+    if (plan.taskId && (!task || task.status === "queued" || task.status === "running")) throw new BadRequestException("Không thể xóa kế hoạch đang được CEO xử lý.");
     const [deleted] = await db.update(ceoPlans).set({ deletedAt: new Date(), deletedBy: ctx.userId, updatedAt: new Date() }).where(and(eq(ceoPlans.id, plan.id), eq(ceoPlans.organizationId, ctx.organizationId), isNull(ceoPlans.deletedAt))).returning({ id: ceoPlans.id });
     if (!deleted) throw new BadRequestException("Không thể xóa kế hoạch.");
     return { deleted: true };
