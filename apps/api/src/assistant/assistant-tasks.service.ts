@@ -89,6 +89,7 @@ export class AssistantTasksService {
       agentName: task.agentName,
       status: task.status,
       error: task.error,
+      webResearchEnabled: task.webResearchEnabled,
       result: task.result,
       createdAt: task.createdAt,
       startedAt: task.startedAt,
@@ -96,6 +97,14 @@ export class AssistantTasksService {
       events: task.events,
       researchSources: task.researchSources,
     };
+  }
+  async resumeResearch(ctx: RequestContext, taskId: string, refreshAgentConfiguration = true) {
+    await this.owned(ctx, taskId);
+    const task = await this.tasks.get(ctx, taskId);
+    if (!task.webResearchEnabled) {
+      throw new ConflictException("Nhiệm vụ này không sử dụng Web Research nên không thể tiếp tục nghiên cứu.");
+    }
+    return this.tasks.resumeResearch(ctx, taskId, refreshAgentConfiguration);
   }
   async cancel(ctx: RequestContext, taskId: string) {
     await this.owned(ctx, taskId);
