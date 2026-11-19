@@ -95,6 +95,7 @@ export interface UpdateAgentInput {
   modelId?: string | null;
   status?: AgentStatus;
   enabledTools?: string[];
+  fallbackModels?: string[];
 }
 
 export interface CreateAgentTemplateInput {
