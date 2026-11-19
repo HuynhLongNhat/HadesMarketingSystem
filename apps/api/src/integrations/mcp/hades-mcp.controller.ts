@@ -6,11 +6,13 @@ import { hasPermission } from "../../common/permissions/permissions.js";
 import { PERMISSIONS } from "../../common/permissions/permissions.js";
 import { AgentsService } from "../../agents/agents.service.js";
 import { TasksService } from "../../tasks/tasks.service.js";
+import { importExternalPlanSchema } from "../../ceo-planning/ceo-planning.dto.js";
 import { CeoPlanningService } from "../../ceo-planning/ceo-planning.service.js";
 
 type Rpc = { jsonrpc: "2.0"; id?: string | number | null; method: string; params?: { name?: string; arguments?: Record<string, unknown> } };
 const tools = [
   { name: "hades_list_agents", description: "List AI agents in the active organization", inputSchema: { type: "object", properties: {}, additionalProperties: false } },
+  { name: "nova_create_plan", description: "Import a completed external AI plan into Nova for human approval. Does not execute tasks.", inputSchema: { type: "object", properties: { title: { type: "string" }, objective: { type: "string" }, source: { type: "string", enum: ["chatgpt", "gemini", "claude", "other"] }, structuredPlan: { type: "object" } }, required: ["title", "objective", "source", "structuredPlan"], additionalProperties: false } },
   { name: "nova_list_plans", description: "List existing CEO plans and approval states in the active organization", inputSchema: { type: "object", properties: {}, additionalProperties: false } },
   { name: "nova_get_plan", description: "Read a CEO plan by ID including its structured plan and approval status", inputSchema: { type: "object", properties: { planId: { type: "string", format: "uuid" } }, required: ["planId"], additionalProperties: false } },
   { name: "nova_list_plan_reviews", description: "Read existing strategic reviews of a CEO plan", inputSchema: { type: "object", properties: { planId: { type: "string", format: "uuid" } }, required: ["planId"], additionalProperties: false } },
@@ -33,15 +35,20 @@ export class HadesMcpController {
     if (request.method === "ping") return respond({});
     if (request.method === "tools/list") {
       if (!hasPermission(ctx.role, PERMISSIONS.AGENT_READ)) throw new ForbiddenException("Agent read permission required");
-      return respond({ tools: tools.filter((tool) => tool.name !== "hades_create_task" || hasPermission(ctx.role, PERMISSIONS.AGENT_MANAGE)) });
+      return respond({ tools: tools.filter((tool) => !["hades_create_task", "nova_create_plan"].includes(tool.name) || hasPermission(ctx.role, PERMISSIONS.AGENT_MANAGE)) });
     }
     if (request.method !== "tools/call") return { jsonrpc: "2.0", id: request.id ?? null, error: { code: -32601, message: "Method not found" } };
     const name = request.params?.name;
     const args = request.params?.arguments ?? {};
     if (!tools.some((tool) => tool.name === name)) return { jsonrpc: "2.0", id: request.id ?? null, error: { code: -32602, message: "Unknown tool" } };
-    if (!hasPermission(ctx.role, name === "hades_create_task" ? PERMISSIONS.AGENT_MANAGE : PERMISSIONS.AGENT_READ)) throw new ForbiddenException("Insufficient permissions");
+    if (!hasPermission(ctx.role, ["hades_create_task", "nova_create_plan"].includes(name ?? "") ? PERMISSIONS.AGENT_MANAGE : PERMISSIONS.AGENT_READ)) throw new ForbiddenException("Insufficient permissions");
     let data: unknown;
     if (name === "hades_list_agents") data = await this.agents.list(ctx);
+    if (name === "nova_create_plan") {
+      const parsed = importExternalPlanSchema.safeParse(args);
+      if (!parsed.success) throw new BadRequestException("Invalid external plan. Expected v3.1 structuredPlan.");
+      data = await this.plans.importExternal(ctx, parsed.data);
+    }
     if (name === "nova_list_plans") data = await this.plans.list(ctx);
     if (name === "nova_get_plan" || name === "nova_list_plan_reviews") {
       if (typeof args.planId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(args.planId)) throw new BadRequestException("Valid planId required");
