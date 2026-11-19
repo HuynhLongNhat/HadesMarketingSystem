@@ -367,6 +367,24 @@ test(
             },
           );
           await t.test(
+            "Resume is owner-scoped and rejects tasks without Web Research",
+            async () => {
+              assert.equal(
+                (await request(`/tasks/${taskId}/resume-research`, "POST", {}, "other")).status,
+                404,
+              );
+              assert.equal(
+                (await request(`/tasks/${taskId}/resume-research`, "POST", {}, "tenant")).status,
+                404,
+              );
+              assert.equal(
+                (await request(`/tasks/${taskId}/resume-research`, "POST", {})).status,
+                409,
+              );
+              assert.equal(queued, 1);
+            },
+          );
+          await t.test(
             "Fixture result/error/events and sources are returned, not fabricated by Assistant",
             async () => {
               await tx
