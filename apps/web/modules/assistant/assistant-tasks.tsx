@@ -213,11 +213,21 @@ export function AssistantTaskWorkspace({
             };
       request.current = { conversationId: id, input };
       const result = await assistantTasksApi.create(id, input);
+      // A successful create must remain successful even if refreshing the
+      // conversation task list fails (e.g. a temporary network outage).
       setDraft("");
       request.current = null;
-      setTasks(await assistantTasksApi.list(id));
       onCreated();
       onOpen(result.taskId);
+      try {
+        setTasks(await assistantTasksApi.list(id));
+      } catch (refreshError) {
+        // The task is already persisted; avoid suggesting that submission
+        // failed, which could lead to duplicate tasks on another attempt.
+        setError(
+          `Đã giao nhiệm vụ thành công nhưng chưa tải lại được danh sách: ${message(refreshError)}`,
+        );
+      }
     } catch (e) {
       setError(message(e));
     } finally {
