@@ -332,6 +332,7 @@
     { "idx": 52, "version": "7", "when": 1796086800000, "tag": "0052_hybrid_search_providers", "breakpoints": true },
     { "idx": 53, "version": "7", "when": 1796173200000, "tag": "0053_research_checkpoints", "breakpoints": true },
     { "idx": 54, "version": "7", "when": 1796259600000, "tag": "0054_personal_assistant", "breakpoints": true },
-    { "idx": 55, "version": "7", "when": 1796346000000, "tag": "0055_assistant_task_links", "breakpoints": true }
+    { "idx": 55, "version": "7", "when": 1796346000000, "tag": "0055_assistant_task_links", "breakpoints": true },
+    { "idx": 56, "version": "7", "when": 1796432400000, "tag": "0056_agent_fallback_models", "breakpoints": true }
   ]
 }
