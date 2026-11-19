@@ -50,7 +50,7 @@ const LEASE_MS = 90_000;
 const LEASE_HEARTBEAT_MS = 20_000;
 
 type Usage = { input?: unknown; output?: unknown; total?: unknown };
-type Runtime = { provider: string; protocol: "openai" | "anthropic" | "google"; endpoint: string; apiKey: string; modelId: string };
+type Runtime = { provider: string; protocol: "openai" | "anthropic" | "google"; endpoint: string; apiKey: string; modelId: string; fallbackModels?: string[] };
 type ResearchDecision = { useResearch: boolean; query: string | null; fallback: boolean };
 
 export function isTruncatedFinishReason(value: unknown) {
@@ -337,7 +337,7 @@ export class TaskAiExecutionService {
     } catch { throw new TaskProviderError("Không thể giải mã credential của AI Provider.", false); }
     if (!apiKey.trim()) throw new TaskProviderError("API key của AI Provider trống.", false);
     const endpoint = definition.baseUrl.replace(/\/$/, "");
-    if (definition.runtimeProtocol === "openai") return { provider: connection.provider, protocol: "openai", endpoint: `${endpoint}/chat/completions`, apiKey, modelId: task.modelId };
+    if (definition.runtimeProtocol === "openai") return { provider: connection.provider, protocol: "openai", endpoint: `${endpoint}/chat/completions`, apiKey, modelId: task.modelId, fallbackModels: task.agentFallbackModels };
     if (definition.runtimeProtocol === "anthropic") return { provider: connection.provider, protocol: "anthropic", endpoint: `${endpoint}/messages`, apiKey, modelId: task.modelId };
     const modelId = task.modelId.replace(/^models\//, "");
     if (!/^[a-zA-Z0-9._:-]+$/.test(modelId)) throw new TaskProviderError("Model ID Google không hợp lệ: đang dùng tên hiển thị. Hãy chọn lại mô hình trong hồ sơ nhân viên (ví dụ gemini-2.5-flash), sau đó tiếp tục với cấu hình Agent đã cập nhật.", false);
@@ -353,7 +353,7 @@ export class TaskAiExecutionService {
       } else if (runtime.protocol === "google") {
         response = await fetch(runtime.endpoint, { method: "POST", headers: { "x-goog-api-key": runtime.apiKey, "Content-Type": "application/json" }, body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { temperature: 0.3, maxOutputTokens } }), signal: AbortSignal.timeout(timeoutMs), redirect: "error" });
       } else {
-        response = await fetch(runtime.endpoint, { method: "POST", headers: { Authorization: `Bearer ${runtime.apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: runtime.modelId, temperature: 0.3, max_completion_tokens: maxOutputTokens, messages: [{ role: "system", content: "Trả lời chính xác theo yêu cầu, không bịa dữ liệu." }, { role: "user", content: prompt }] }), signal: AbortSignal.timeout(timeoutMs), redirect: "error" });
+        response = await fetch(runtime.endpoint, { method: "POST", headers: { Authorization: `Bearer ${runtime.apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: runtime.modelId, ...(runtime.provider === "openrouter" && runtime.fallbackModels?.length ? { models: [runtime.modelId, ...runtime.fallbackModels] } : {}), temperature: 0.3, max_completion_tokens: maxOutputTokens, messages: [{ role: "system", content: "Trả lời chính xác theo yêu cầu, không bịa dữ liệu." }, { role: "user", content: prompt }] }), signal: AbortSignal.timeout(timeoutMs), redirect: "error" });
       }
     } catch (error) {
       const name = error instanceof Error ? error.name : "";
@@ -405,7 +405,7 @@ export class TaskAiExecutionService {
     const instruction = `Decide whether this task requires current public web information. Return JSON only: {"use_web_research":boolean,"query":string|null}. Use web research only when current, externally verifiable information is necessary; do not use it for writing, editing, reasoning, or user-provided content.\nTitle: ${task.title}\nRequest: ${task.description}`;
     if (runtime.protocol === "openai") {
       try {
-        const response = await fetch(runtime.endpoint, { method: "POST", headers: { Authorization: `Bearer ${runtime.apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: runtime.modelId, temperature: 0, messages: [{ role: "system", content: "You decide whether to use the provided web research tool." }, { role: "user", content: instruction }], tools: [{ type: "function", function: { name: "web_research", description: "Search public web sources when current evidence is required.", parameters: { type: "object", additionalProperties: false, properties: { query: { type: "string" } }, required: ["query"] } } }], tool_choice: "auto" }), signal: AbortSignal.timeout(TIMEOUT_MS), redirect: "error" });
+        const response = await fetch(runtime.endpoint, { method: "POST", headers: { Authorization: `Bearer ${runtime.apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: runtime.modelId, ...(runtime.provider === "openrouter" && runtime.fallbackModels?.length ? { models: [runtime.modelId, ...runtime.fallbackModels] } : {}), temperature: 0, messages: [{ role: "system", content: "You decide whether to use the provided web research tool." }, { role: "user", content: instruction }], tools: [{ type: "function", function: { name: "web_research", description: "Search public web sources when current evidence is required.", parameters: { type: "object", additionalProperties: false, properties: { query: { type: "string" } }, required: ["query"] } } }], tool_choice: "auto" }), signal: AbortSignal.timeout(TIMEOUT_MS), redirect: "error" });
         if (response.ok) {
           const body = await response.json() as { choices?: Array<{ message?: { tool_calls?: Array<{ function?: { name?: string; arguments?: string } }>; content?: string } }> };
           const message = body.choices?.[0]?.message;
