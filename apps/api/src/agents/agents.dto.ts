@@ -61,6 +61,13 @@ export class CreateAgentDto {
   @ArrayMaxSize(50)
   @IsString({ each: true })
   enabledTools?: string[];
+
+  @ApiPropertyOptional({ type: [String], description: "Ordered free OpenRouter fallback models" })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(4)
+  @IsString({ each: true })
+  fallbackModels?: string[];
 }
 
 export class UpdateAgentDto {
