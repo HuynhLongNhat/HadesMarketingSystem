@@ -39,6 +39,7 @@ interface Props {
   onChange: (value: string) => void;
   disabled?: boolean;
   embeddingOnly?: boolean;
+  freeOnly?: boolean;
 }
 
 export function ModelPicker({
@@ -48,6 +49,7 @@ export function ModelPicker({
   onChange,
   disabled,
   embeddingOnly = false,
+  freeOnly = false,
 }: Props) {
   const { t } = useUiLanguage();
 
@@ -100,9 +102,11 @@ export function ModelPicker({
     };
   }, [connectionId, embeddingOnly, provider, revision]);
 
+  const visibleModels = useMemo(() => freeOnly ? models.filter((model) => model.id.endsWith(":free")) : models, [models, freeOnly]);
+
   const selected = useMemo(
-    () => models.find((item) => item.id === value),
-    [models, value],
+    () => visibleModels.find((item) => item.id === value),
+    [visibleModels, value],
   );
 
   const label = !provider
@@ -115,7 +119,7 @@ export function ModelPicker({
           ? selected.name
           : value
             ? value
-            : models.length === 0
+            : visibleModels.length === 0
               ? t.noModelsAvailable
               : t.chooseModel;
 
@@ -166,7 +170,7 @@ export function ModelPicker({
             <CommandList className="max-h-72">
               <CommandEmpty>{t.noModel}</CommandEmpty>
 
-              {models.map((model) => (
+              {visibleModels.map((model) => (
                 <CommandItem
                   key={model.id}
                   value={`${model.name} ${model.id}`}
