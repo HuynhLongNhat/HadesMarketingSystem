@@ -23,6 +23,7 @@ export type AssistantTaskDetail = Pick<
   | "agentName"
   | "status"
   | "error"
+  | "webResearchEnabled"
   | "result"
   | "createdAt"
   | "startedAt"
@@ -44,6 +45,8 @@ export const assistantTasksApi = {
     ),
   get: (id: string) =>
     apiFetch<AssistantTaskDetail>(`/assistant/tasks/${encodeURIComponent(id)}`),
+  resumeResearch: (id: string) =>
+    apiFetch<unknown>(`/assistant/tasks/${encodeURIComponent(id)}/resume-research`, { method: "POST" }),
   cancel: (id: string) =>
     apiFetch<{ cancelled: boolean }>(
       `/assistant/tasks/${encodeURIComponent(id)}/cancel`,
