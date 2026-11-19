@@ -40,6 +40,7 @@ export interface AiAgent {
   modelId: string | null;
   toolConfig: {
     enabledTools: string[];
+    fallbackModels?: string[];
   };
   createdAt: string;
   updatedAt: string;
@@ -81,6 +82,7 @@ export interface CreateAgentInput {
   connectionId?: string;
   modelId?: string;
   enabledTools?: string[];
+  fallbackModels?: string[];
 }
 
 export interface UpdateAgentInput {
