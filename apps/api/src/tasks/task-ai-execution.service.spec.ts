@@ -119,6 +119,25 @@ describe("AI task prompts", () => {
     } finally { globalThis.fetch = previousFetch; }
   });
 
+  it("records the selected fallback model during Web Research decision", async () => {
+    const previousFetch = globalThis.fetch;
+    const instance = service();
+    const observed: string[] = [];
+    (instance as unknown as { event: (...args: unknown[]) => Promise<void> }).event = async (...args) => { observed.push(String(args[3])); };
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      model: "vendor/backup:free",
+      choices: [{ message: { content: '{"use_web_research":false,"query":null}' } }],
+    }), { status: 200 })) as typeof fetch;
+    try {
+      const decide = Reflect.get(instance, "decideResearch") as (runtime: object, task: object) => Promise<{ useResearch: boolean }>;
+      const result = await decide.call(instance,
+        { provider: "openrouter", protocol: "openai", endpoint: "https://example.invalid", apiKey: "test", modelId: "vendor/primary:free", fallbackModels: ["vendor/backup:free"] },
+        { id: "task-1", organizationId: "org-1", title: "Research", description: "Check sources" });
+      assert.equal(result.useResearch, false);
+      assert.match(observed.join(" "), /vendor\\/backup:free/);
+    } finally { globalThis.fetch = previousFetch; }
+  });
+
   it("uses a CEO-only JSON prompt and can build a single repair request without exposing it in logs", () => {
     const instance = service();
     const ceoPrompt = Reflect.get(instance, "ceoPrompt") as (task: Pick<PromptTask, "description" | "agentName" | "agentRole" | "agentSystemPrompt">) => string;
