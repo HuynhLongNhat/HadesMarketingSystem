@@ -1,5 +1,6 @@
 
 import { Module } from "@nestjs/common";
+import { HadesMcpModule } from "./integrations/mcp/hades-mcp.module.js";
 import { AssistantModule } from "./assistant/assistant.module.js";
 import { BullModule } from "@nestjs/bullmq";
 
@@ -28,6 +29,7 @@ import { MarketIntelligenceModule } from "./market-intelligence/market-intellige
 @Module({
   imports: [
     AssistantModule,
+    HadesMcpModule,
     DatabaseModule,
     WidgetSettingsModule,
     BusinessProfileModule,
