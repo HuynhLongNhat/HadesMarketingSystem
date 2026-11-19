@@ -25,6 +25,7 @@ import { normalizeAgentCapabilities } from "./agent-capabilities.js";
 
 function validateFallback(models: string[] | undefined, modelId: string | null | undefined) {
   if (!models) return;
+  if (models.length && !modelId?.endsWith(":free")) throw new BadRequestException("Bật fallback miễn phí yêu cầu model chính cũng là :free.");
   if (models.some((m) => !m.endsWith(":free") || m.length > 200 || m === modelId) || new Set(models).size !== models.length) {
     throw new BadRequestException("Model dự phòng phải là OpenRouter :free, không trùng model chính hoặc trùng nhau.");
   }
