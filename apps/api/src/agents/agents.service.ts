@@ -308,8 +308,9 @@ export class AgentsService {
       );
     }
 
-    validateFallback(dto.fallbackModels, modelId);
-    if (dto.fallbackModels?.length) {
+    const effectiveFallback = dto.fallbackModels ?? existing.toolConfig.fallbackModels ?? [];
+    validateFallback(effectiveFallback, modelId);
+    if (effectiveFallback.length) {
       const [connection] = await db.select({ provider: aiProviderConnections.provider }).from(aiProviderConnections)
         .where(and(eq(aiProviderConnections.id, connectionId ?? ""), eq(aiProviderConnections.organizationId, context.organizationId))).limit(1);
       if (connection?.provider !== "openrouter") throw new BadRequestException("Fallback chỉ hỗ trợ OpenRouter.");
