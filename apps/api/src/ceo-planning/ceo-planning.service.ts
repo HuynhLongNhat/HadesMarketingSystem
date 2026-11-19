@@ -4,6 +4,8 @@ import { randomUUID } from "node:crypto";
 import { aiAgents, aiTasks, ceoPlanReviews, ceoPlans, db } from "@workspace/db/node";
 import type { RequestContext } from "../auth/request-context.js";
 import { TasksService } from "../tasks/tasks.service.js";
+import { importExternalPlanSchema } from "./ceo-planning.dto.js";
+import type { ImportExternalPlanInput } from "./ceo-planning.dto.js";
 import type { CreateCeoPlanDto, CreateStrategicReviewDto, DecideCeoPlanDto } from "./ceo-planning.dto.js";
 import { ceoPlanApprovalError } from "./ceo-plan-validation.js";
 import { CeoPlanningContextBuilder, CEO_PLANNING_CONTEXT_VERSION, type CeoPlanningContext } from "./ceo-planning-context.builder.js";
@@ -50,6 +52,20 @@ export class CeoPlanningService {
     return plan;
   }
   async create(ctx: RequestContext, dto: CreateCeoPlanDto) { return this.createPlan(ctx, dto); }
+  /** Save a finished strategy from an external AI without spending provider tokens. */
+  async importExternal(ctx: RequestContext, input: ImportExternalPlanInput) {
+    const parsed = importExternalPlanSchema.safeParse(input);
+    if (!parsed.success) throw new BadRequestException("Kế hoạch nhập không đúng schema v3.1.");
+    const { title, objective, source, structuredPlan } = parsed.data;
+    if (structuredPlan.objective !== objective) throw new BadRequestException("Mục tiêu trong kế hoạch không khớp.");
+    const [plan] = await db.insert(ceoPlans).values({
+      id: randomUUID(), organizationId: ctx.organizationId, createdBy: ctx.userId,
+      title, objective, structuredPlan, structuredPlanVersion: structuredPlan.version,
+      executionSource: { version: "v1", type: "external_ai", source },
+      approvalStatus: "pending",
+    }).returning();
+    return plan;
+  }
   async list(ctx: RequestContext) {
     const rows = await db.select({ plan: ceoPlans, taskStatus: aiTasks.status }).from(ceoPlans)
       .leftJoin(aiTasks, and(eq(aiTasks.id, ceoPlans.taskId), eq(aiTasks.organizationId, ceoPlans.organizationId)))
@@ -72,6 +88,7 @@ export class CeoPlanningService {
   }
   async createReview(ctx: RequestContext, id: string, dto: CreateStrategicReviewDto) {
     const plan = await this.get(ctx, id);
+    if (!plan.taskId) throw new BadRequestException("Kế hoạch nhập từ AI Web không sử dụng AI Reviewer cũ.");
     const [sourceTask] = await db.select({ status: aiTasks.status, result: aiTasks.result }).from(aiTasks).where(and(eq(aiTasks.id, plan.taskId), eq(aiTasks.organizationId, ctx.organizationId))).limit(1);
     const planError = ceoPlanApprovalError(sourceTask, plan.structuredPlan);
     if (planError) throw new BadRequestException(`Chỉ đánh giá kế hoạch hợp lệ đã hoàn tất: ${planError}`);
@@ -117,6 +134,7 @@ export class CeoPlanningService {
   }
   async retry(ctx: RequestContext, id: string) {
     const plan = await this.get(ctx, id);
+    if (!plan.taskId) throw new BadRequestException("Kế hoạch nhập không có tác vụ sinh kế hoạch để thử lại.");
     const [task] = await db.select({ status: aiTasks.status }).from(aiTasks).where(and(eq(aiTasks.id, plan.taskId), eq(aiTasks.organizationId, ctx.organizationId))).limit(1);
     if (!task || task.status !== "failed") throw new BadRequestException("Chỉ có thể thử lại kế hoạch đã thất bại.");
     if (plan.retryCount >= CeoPlanningService.MAX_MANUAL_RETRIES) throw new BadRequestException("Kế hoạch này đã đạt giới hạn thử lại thủ công.");
@@ -142,6 +160,7 @@ export class CeoPlanningService {
   }
   async remove(ctx: RequestContext, id: string) {
     const plan = await this.get(ctx, id);
+    if (!plan.taskId) throw new BadRequestException("Kế hoạch nhập không có tác vụ sinh kế hoạch.");
     const [task] = await db.select({ status: aiTasks.status }).from(aiTasks).where(and(eq(aiTasks.id, plan.taskId), eq(aiTasks.organizationId, ctx.organizationId))).limit(1);
     if (!task || task.status === "queued" || task.status === "running") throw new BadRequestException("Không thể xóa kế hoạch đang được CEO xử lý.");
     const [deleted] = await db.update(ceoPlans).set({ deletedAt: new Date(), deletedBy: ctx.userId, updatedAt: new Date() }).where(and(eq(ceoPlans.id, plan.id), eq(ceoPlans.organizationId, ctx.organizationId), isNull(ceoPlans.deletedAt))).returning({ id: ceoPlans.id });
@@ -152,9 +171,14 @@ export class CeoPlanningService {
     const plan = await this.get(ctx, id);
     if (plan.approvalStatus !== "pending") throw new BadRequestException("Kế hoạch này đã được quyết định.");
     if (dto.decision === "approved") {
+      if (!plan.taskId) {
+        const parsed = importExternalPlanSchema.shape.structuredPlan.safeParse(plan.structuredPlan);
+        if (!parsed.success) throw new BadRequestException("Kế hoạch nhập không hợp lệ.");
+      } else {
       const [task] = await db.select({ status: aiTasks.status, result: aiTasks.result }).from(aiTasks).where(and(eq(aiTasks.id, plan.taskId), eq(aiTasks.organizationId, ctx.organizationId))).limit(1);
       const reportError = ceoPlanApprovalError(task, plan.structuredPlan);
       if (reportError) throw new BadRequestException(`Không thể phê duyệt: ${reportError}`);
+      }
     }
     const [updated] = await db.update(ceoPlans).set({ approvalStatus: dto.decision, decisionNote: dto.note?.trim() || null, decidedBy: ctx.userId, decidedAt: new Date(), updatedAt: new Date() }).where(and(eq(ceoPlans.id, id), eq(ceoPlans.organizationId, ctx.organizationId), eq(ceoPlans.approvalStatus, "pending"))).returning();
     if (!updated) throw new BadRequestException("Không thể cập nhật quyết định kế hoạch.");
