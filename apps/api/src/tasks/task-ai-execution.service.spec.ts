@@ -96,6 +96,29 @@ describe("AI task prompts", () => {
     } finally { globalThis.fetch = previousFetch; }
   });
 
+  it("passes ordered OpenRouter fallback models and records the actual selected model", async () => {
+    const previousFetch = globalThis.fetch;
+    let payload: { model: string; models?: string[] } | undefined;
+    globalThis.fetch = (async (_input, init) => {
+      payload = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({
+        model: "vendor/backup:free",
+        choices: [{ message: { content: "OK" }, finish_reason: "stop" }],
+        usage: { total_tokens: 8 },
+      }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const instance = service();
+      const request = (Reflect.get(instance, "request") as (runtime: object, prompt: string) => Promise<{ text: string; actualModel?: string }>).bind(instance);
+      const result = await request({
+        provider: "openrouter", protocol: "openai", endpoint: "https://provider.invalid/chat/completions",
+        apiKey: "test", modelId: "vendor/main:free", fallbackModels: ["vendor/backup:free"],
+      }, "Hello");
+      assert.deepEqual(payload?.models, ["vendor/main:free", "vendor/backup:free"]);
+      assert.equal(result.actualModel, "vendor/backup:free");
+    } finally { globalThis.fetch = previousFetch; }
+  });
+
   it("uses a CEO-only JSON prompt and can build a single repair request without exposing it in logs", () => {
     const instance = service();
     const ceoPrompt = Reflect.get(instance, "ceoPrompt") as (task: Pick<PromptTask, "description" | "agentName" | "agentRole" | "agentSystemPrompt">) => string;

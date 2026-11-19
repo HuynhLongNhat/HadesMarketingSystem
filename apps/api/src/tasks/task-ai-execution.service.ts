@@ -344,7 +344,7 @@ export class TaskAiExecutionService {
     return { provider: connection.provider, protocol: "google", endpoint: `${endpoint}/models/${encodeURIComponent(modelId)}:generateContent`, apiKey, modelId };
   }
 
-  private async request(runtime: Runtime, prompt: string, maxOutputTokens = MAX_OUTPUT_TOKENS, timeoutMs = TIMEOUT_MS): Promise<{ text: string; usage: Usage }> {
+  private async request(runtime: Runtime, prompt: string, maxOutputTokens = MAX_OUTPUT_TOKENS, timeoutMs = TIMEOUT_MS): Promise<{ text: string; usage: Usage; actualModel?: string }> {
     const started = Date.now();
     let response: Response;
     try {
@@ -371,7 +371,7 @@ export class TaskAiExecutionService {
       }
       throw new TaskProviderError(`AI Provider trả về HTTP ${response.status}. ${diagnostic.guidance}`, isRetryableStatus(response.status));
     }
-    let body: { choices?: Array<{ message?: { content?: string }; finish_reason?: unknown }>; content?: Array<{ text?: string }>; stop_reason?: unknown; usage?: { input_tokens?: unknown; output_tokens?: unknown; prompt_tokens?: unknown; completion_tokens?: unknown; total_tokens?: unknown }; usageMetadata?: { promptTokenCount?: unknown; candidatesTokenCount?: unknown; totalTokenCount?: unknown }; candidates?: Array<{ content?: { parts?: Array<{ text?: string }> }; finishReason?: unknown }> };
+    let body: { model?: string; choices?: Array<{ message?: { content?: string }; finish_reason?: unknown }>; content?: Array<{ text?: string }>; stop_reason?: unknown; usage?: { input_tokens?: unknown; output_tokens?: unknown; prompt_tokens?: unknown; completion_tokens?: unknown; total_tokens?: unknown }; usageMetadata?: { promptTokenCount?: unknown; candidatesTokenCount?: unknown; totalTokenCount?: unknown }; candidates?: Array<{ content?: { parts?: Array<{ text?: string }> }; finishReason?: unknown }> };
     try {
       body = await response.json() as typeof body;
     } catch (error) {
@@ -387,9 +387,9 @@ export class TaskAiExecutionService {
     }
     const finishReason = runtime.protocol === "anthropic" ? body.stop_reason : runtime.protocol === "google" ? body.candidates?.[0]?.finishReason : body.choices?.[0]?.finish_reason;
     const usage = runtime.protocol === "google" ? { input: body.usageMetadata?.promptTokenCount, output: body.usageMetadata?.candidatesTokenCount, total: body.usageMetadata?.totalTokenCount } : { input: body.usage?.input_tokens ?? body.usage?.prompt_tokens, output: body.usage?.output_tokens ?? body.usage?.completion_tokens, total: body.usage?.total_tokens };
-    this.logger.log(JSON.stringify({ event: "ai_provider.completion_metadata", provider: runtime.provider, modelId: runtime.modelId, finishReason: typeof finishReason === "string" ? finishReason : null, promptTokens: token(usage.input), completionTokens: token(usage.output), totalTokens: token(usage.total), requestedMaxCompletionTokens: maxOutputTokens }));
+    this.logger.log(JSON.stringify({ event: "ai_provider.completion_metadata", provider: runtime.provider, modelId: typeof body.model === "string" ? body.model : runtime.modelId, requestedModelId: runtime.modelId, finishReason: typeof finishReason === "string" ? finishReason : null, promptTokens: token(usage.input), completionTokens: token(usage.output), totalTokens: token(usage.total), requestedMaxCompletionTokens: maxOutputTokens }));
     if (isTruncatedFinishReason(finishReason)) throw new TaskProviderError("AI Provider đã dừng output vì giới hạn token; kế hoạch/báo cáo chưa hoàn chỉnh. Hãy rút gọn yêu cầu hoặc dùng model có output limit lớn hơn.", false);
-    return { text: text.trim(), usage };
+    return { text: text.trim(), usage, actualModel: typeof body.model === "string" && body.model.trim() ? body.model.trim() : undefined };
   }
 
   private parseResearchDecision(value: string, task: typeof aiTasks.$inferSelect): ResearchDecision {
@@ -587,10 +587,11 @@ export class TaskAiExecutionService {
       if (reservation.limited) reservationIds.push(reservation.reservationId);
       if (isCeoPlan) this.logger.log(JSON.stringify({ event: "ceo_plan.generation_started", taskId: task.id, organizationId: task.organizationId }));
       const generated = await this.request(runtime!, prompt, maxOutputTokens, (effective?.timeoutSeconds ?? (isCeoPlan ? CEO_PLAN_TIMEOUT_MS / 1000 : TIMEOUT_MS / 1000)) * 1000);
+      if (generated.actualModel) await this.event(task.id, task.organizationId, "model_used", `AI Provider ${runtime!.provider} đã sử dụng model ${generated.actualModel}${generated.actualModel !== runtime!.modelId ? ` (model chính: ${runtime!.modelId})` : ""}.`);
       usageEntries.push({ usage: generated.usage, purpose: isCeoPlan ? "ceo_planning_generation" : isStrategicReview ? "strategic_review" : "market_research_task" });
       return generated;
       };
-      let result: { text: string; usage: Usage };
+      let result: { text: string; usage: Usage; actualModel?: string };
       if (marketProject) {
         const analysis = await researchCheckpoint(checkpointIdentity(), "analyzing_evidence",
           { prompt, provider: runtime.provider, modelId: runtime.modelId, maxOutputTokens },
@@ -616,6 +617,7 @@ export class TaskAiExecutionService {
             this.logger.warn(JSON.stringify({ event: "ceo_plan.repair_failed", taskId: task.id, organizationId: task.organizationId, ...safeExecutionFailure(error) }));
             throw error;
           }
+          if (result.actualModel) await this.event(task.id, task.organizationId, "model_used", `AI Provider ${runtime.provider} đã sử dụng model ${result.actualModel} cho bước sửa kết quả.`);
           usageEntries.push({ usage: result.usage, purpose: "ceo_planning_repair" });
           structured = extractCeoStructuredPlan(result.text);
           if ("error" in structured) {
