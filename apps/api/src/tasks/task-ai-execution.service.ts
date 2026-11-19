@@ -591,7 +591,7 @@ export class TaskAiExecutionService {
       usageEntries.push({ usage: generated.usage, purpose: isCeoPlan ? "ceo_planning_generation" : isStrategicReview ? "strategic_review" : "market_research_task" });
       return generated;
       };
-      let result: { text: string; usage: Usage };
+      let result: { text: string; usage: Usage; actualModel?: string };
       if (marketProject) {
         const analysis = await researchCheckpoint(checkpointIdentity(), "analyzing_evidence",
           { prompt, provider: runtime.provider, modelId: runtime.modelId, maxOutputTokens },
