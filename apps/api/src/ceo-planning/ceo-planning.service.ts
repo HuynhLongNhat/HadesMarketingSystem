@@ -57,6 +57,7 @@ export class CeoPlanningService {
     const parsed = importExternalPlanSchema.safeParse(input);
     if (!parsed.success) throw new BadRequestException("Kế hoạch nhập không đúng schema v3.1.");
     const { title, objective, source, structuredPlan } = parsed.data;
+    if (structuredPlan.tasks.some((task) => task.responsibleType === "EXISTING_AGENT")) throw new BadRequestException("Import V1 chưa hỗ trợ ánh xạ agentRef; dùng HUMAN hoặc PROPOSED_AGENT và phân công sau khi duyệt.");
     if (structuredPlan.objective !== objective) throw new BadRequestException("Mục tiêu trong kế hoạch không khớp.");
     const [plan] = await db.insert(ceoPlans).values({
       id: randomUUID(), organizationId: ctx.organizationId, createdBy: ctx.userId,
