@@ -7,5 +7,13 @@ export type MarketIntelligenceProject = { id:string; taskId:string; title:string
 export type MarketIntelligenceJobStep = { id:string; stepKey:string; title:string; sequence:number; status:"pending"|"running"|"completed"|"failed"|"skipped"; agentName:string|null; startedAt:string|null; completedAt:string|null; resultCount:number|null; safeError:string|null };
 export type MarketIntelligenceEvent = { id:string; type:string; message:string; createdAt:string };
 export type CreateMarketIntelligenceProjectInput = { title:string; industry:string; market:string; targetAudience?:string; objective:string; maxSources?:number; researchProvider?:"searxng"|"tavily"; researchAgentId:string; keywords?:string[]; sourceUrls?:string[] };
-export type MarketIntelligenceDetail = MarketIntelligenceProject & { task: { status:string; error:string|null; result:string|null } | null; sources:Array<{id:string;title:string;displayUrl:string;excerpt:string|null;extractedContent:string|null;extractionStatus:string;extractionError:string|null;domain:string;retrievedAt:string|null}>; configuredSources:Array<{id:string;kind:string;url:string;status:string;safeErrorCode:string|null}>; report:{content:string;structuredReport:Record<string,unknown>|null}|null; findings:unknown[]; steps:MarketIntelligenceJobStep[]; events:MarketIntelligenceEvent[] };
+export type MarketPainFinding = {
+  id: string;
+  sourceId: string | null;
+  kind: string;
+  statement: string;
+  confidence: string;
+  evidenceCount: number;
+};
+export type MarketIntelligenceDetail = MarketIntelligenceProject & { task: { status:string; error:string|null; result:string|null } | null; sources:Array<{id:string;title:string;displayUrl:string;excerpt:string|null;extractedContent:string|null;extractionStatus:string;extractionError:string|null;domain:string;retrievedAt:string|null}>; configuredSources:Array<{id:string;kind:string;url:string;status:string;safeErrorCode:string|null}>; report:{content:string;structuredReport:Record<string,unknown>|null}|null; findings:MarketPainFinding[]; steps:MarketIntelligenceJobStep[]; events:MarketIntelligenceEvent[] };
 export const marketIntelligenceApi = { list: () => apiFetch<Array<{ project: MarketIntelligenceProject; taskStatus:string; taskError:string|null }>>("/market-intelligence"), get: (id:string) => apiFetch<MarketIntelligenceDetail>(`/market-intelligence/${encodeURIComponent(id)}`), create: (input:CreateMarketIntelligenceProjectInput) => apiFetch<MarketIntelligenceProject>("/market-intelligence", { method:"POST", body:JSON.stringify(input) }), cancel: (id:string) => apiFetch<{cancelled:true}>(`/market-intelligence/${encodeURIComponent(id)}/cancel`, { method:"POST" }), retry: (id:string) => apiFetch<MarketIntelligenceProject>(`/market-intelligence/${encodeURIComponent(id)}/retry`, { method:"POST" }) };
