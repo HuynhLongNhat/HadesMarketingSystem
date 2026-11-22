@@ -21,6 +21,7 @@ import httpx
 import trafilatura
 from fastapi import FastAPI, HTTPException
 from pydantic import AnyHttpUrl, BaseModel, Field
+from .pain_engine import analyze_evidence
 
 SEARXNG_URL = os.getenv("SEARXNG_URL", "http://searxng:8080").rstrip("/")
 HTTP_TIMEOUT_SECONDS = float(os.getenv("RESEARCH_HTTP_TIMEOUT_SECONDS", "15"))
@@ -207,4 +208,6 @@ async def research(request: ResearchRequest) -> dict:
             if len(candidates) >= request.max_results:
                 break
         evidence = await asyncio.gather(*(extract(client, str(result["url"]), str(result.get("title") or ""), str(result.get("content") or result.get("snippet") or "")[:12000] or None) for _, result in candidates))
-        return {"provider": "searxng", "queries": clean_queries, "sources": [item.model_dump(mode="json") for item in evidence]}
+        serialized = [item.model_dump(mode="json") for item in evidence]
+        return {"provider": "searxng", "queries": clean_queries, "sources": serialized,
+                "pain_signals": analyze_evidence(serialized)}
