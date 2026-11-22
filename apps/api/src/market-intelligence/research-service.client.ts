@@ -12,7 +12,19 @@ export type ResearchServiceSource = {
   retrieved_at: string;
   content_hash: string | null;
 };
-export type ResearchServiceResult = { provider: "searxng"; queries: string[]; sources: ResearchServiceSource[] };
+export type ResearchPainSignal = {
+  canonical_url: string;
+  category: string;
+  quote: string;
+  verified: true;
+  confidence: "low";
+};
+export type ResearchServiceResult = {
+  provider: "searxng";
+  queries: string[];
+  sources: ResearchServiceSource[];
+  pain_signals: ResearchPainSignal[];
+};
 
 export class ResearchServiceError extends Error {
   constructor(readonly code: "RESEARCH_SERVICE_UNAVAILABLE" | "RESEARCH_SERVICE_INVALID_RESPONSE", message: string) { super(message); this.name = "ResearchServiceError"; }
@@ -58,9 +70,32 @@ export class ResearchServiceClient {
     try { body = await response.json(); }
     catch { throw new ResearchServiceError("RESEARCH_SERVICE_INVALID_RESPONSE", "Research Service trả về phản hồi không hợp lệ."); }
     if (!body || typeof body !== "object") throw new ResearchServiceError("RESEARCH_SERVICE_INVALID_RESPONSE", "Research Service trả về phản hồi không hợp lệ.");
-    const parsed = body as { provider?: unknown; queries?: unknown; sources?: unknown };
+    const parsed = body as { provider?: unknown; queries?: unknown; sources?: unknown; pain_signals?: unknown };
     if (parsed.provider !== "searxng" || !Array.isArray(parsed.queries) || !Array.isArray(parsed.sources)) throw new ResearchServiceError("RESEARCH_SERVICE_INVALID_RESPONSE", "Research Service trả về cấu trúc dữ liệu không hợp lệ.");
     const sources = parsed.sources.map(readSource).filter((source): source is ResearchServiceSource => Boolean(source)).slice(0, input.maxResults);
-    return { provider: "searxng", queries: parsed.queries.filter((query): query is string => typeof query === "string").slice(0, 8), sources };
+    // Verify service output at the trust boundary. Older deployments may omit pain_signals.
+    const extractedByUrl = new Map(sources
+      .filter((source) => source.extraction_status === "retrieved" && source.extracted_content)
+      .map((source) => [source.canonical_url, source.extracted_content!]));
+    const painSignals: ResearchPainSignal[] = [];
+    for (const raw of Array.isArray(parsed.pain_signals) ? parsed.pain_signals.slice(0, 60) : []) {
+      if (!raw || typeof raw !== "object") continue;
+      const signal = raw as Record<string, unknown>;
+      if (typeof signal.canonical_url !== "string" ||
+          typeof signal.category !== "string" || !/^[a-z_]{2,32}$/.test(signal.category) ||
+          typeof signal.quote !== "string" || signal.quote.length < 3 || signal.quote.length > 300 ||
+          signal.verified !== true || signal.confidence !== "low" ||
+          !extractedByUrl.get(signal.canonical_url)?.includes(signal.quote)) continue;
+      painSignals.push({
+        canonical_url: signal.canonical_url, category: signal.category, quote: signal.quote,
+        verified: true, confidence: "low",
+      });
+    }
+    return {
+      provider: "searxng",
+      queries: parsed.queries.filter((query): query is string => typeof query === "string").slice(0, 8),
+      sources,
+      pain_signals: painSignals,
+    };
   }
 }
