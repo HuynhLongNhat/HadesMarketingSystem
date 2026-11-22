@@ -14,6 +14,7 @@ import {
   ceoPlanReviews,
   marketIntelligenceProjects,
   marketIntelligenceReports,
+  marketIntelligenceFindings,
   marketIntelligenceJobSteps,
   departmentTaskRuns,
   departmentTaskSteps,
