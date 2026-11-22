@@ -286,8 +286,23 @@ export class TaskAiExecutionService {
       } catch { /* Service output is validated again before persistence. */ }
     }
     const evidenceSources = sources.filter((source) => source.status === "retrieved");
+    const [marketProject] = await db.select({ id: marketIntelligenceProjects.id })
+      .from(marketIntelligenceProjects)
+      .where(and(eq(marketIntelligenceProjects.taskId, task.id), eq(marketIntelligenceProjects.organizationId, task.organizationId)))
+      .limit(1);
+    const sourceByUrl = new Map(evidenceSources.map((source) => [source.canonicalUrl, source]));
+    const findings = marketProject ? result.pain_signals.flatMap((signal) => {
+      const source = sourceByUrl.get(signal.canonical_url);
+      if (!source || !source.extractedContent?.includes(signal.quote)) return [];
+      return [{
+        id: randomUUID(), organizationId: task.organizationId, projectId: marketProject.id,
+        sourceId: source.id, kind: signal.category, statement: signal.quote,
+        confidence: "low", evidenceCount: 1,
+      }];
+    }).slice(0, 60) : [];
     await db.transaction(async (tx) => {
       if (sources.length) await tx.insert(aiTaskResearchSources).values(sources);
+      if (findings.length) await tx.insert(marketIntelligenceFindings).values(findings);
       if (evidenceSources.length) await tx.insert(aiTaskReportCitations).values(evidenceSources.map((source) => ({ id: randomUUID(), organizationId: task.organizationId, taskId: task.id, sourceId: source.id, citationNumber: source.ordinal })));
       await tx.update(aiTaskResearchRuns).set({ status: "completed", sourceCount: sources.length, completedAt: new Date(), updatedAt: new Date(), safeErrorCode: null }).where(and(eq(aiTaskResearchRuns.id, runId), eq(aiTaskResearchRuns.organizationId, task.organizationId), eq(aiTaskResearchRuns.taskId, task.id)));
     });
