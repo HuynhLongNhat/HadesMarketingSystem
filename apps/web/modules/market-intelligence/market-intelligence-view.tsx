@@ -58,7 +58,7 @@ import {
 } from "@/lib/market-intelligence-api";
 
 type WorkspaceTab = "create" | "history";
-type DetailTab = "report" | "sources" | "progress";
+type DetailTab = "report" | "sources" | "pain" | "progress";
 type ResearchDepth = "overview" | "detailed" | "comprehensive";
 type ResearchForm = {
   title: string;
@@ -776,6 +776,7 @@ function ResearchDetail({
             <TabsTrigger value="sources">
               Nguồn ({detail.sources.length})
             </TabsTrigger>
+            <TabsTrigger value="pain">Nỗi đau ({detail.findings.length})</TabsTrigger>
             <TabsTrigger value="progress">Chi tiết tiến trình</TabsTrigger>
           </TabsList>
         </div>
@@ -812,6 +813,41 @@ function ResearchDetail({
                       ? "Nghiên cứu đã bị hủy trước khi báo cáo được tạo."
                       : "Báo cáo sẽ xuất hiện khi bước tạo báo cáo hoàn tất."}
                 </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+        <TabsContent value="pain">
+          <Card className="border-border/80">
+            <CardHeader>
+              <CardTitle>Tín hiệu nỗi đau tiếng Việt</CardTitle>
+              <CardDescription>
+                Trích dẫn từ nguồn đã thu thập. Khớp từ khóa không chứng minh
+                nhu cầu mua; các tín hiệu này cần được kiểm tra thủ công.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {detail.findings.length ? detail.findings.map((finding) => {
+                const source = detail.sources.find((item) => item.id === finding.sourceId);
+                return (
+                  <div key={finding.id} className="space-y-2 rounded-lg border p-4">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant="secondary">{finding.kind.replaceAll("_", " ")}</Badge>
+                      <Badge variant="outline">Chưa xác minh nhu cầu mua</Badge>
+                    </div>
+                    <blockquote className="border-l-2 pl-3 text-sm leading-6">{finding.statement}</blockquote>
+                    {source && (
+                      <a href={source.displayUrl} target="_blank" rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-sm underline underline-offset-4">
+                        {source.title} <ArrowUpRight className="size-4" />
+                      </a>
+                    )}
+                  </div>
+                );
+              }) : (
+                <p className="py-8 text-center text-sm text-muted-foreground">
+                  Chưa phát hiện nỗi đau khớp bộ từ khóa tiếng Việt trong nguồn đã trích xuất.
+                </p>
               )}
             </CardContent>
           </Card>
