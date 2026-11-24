@@ -47,7 +47,7 @@ export class ActivitiesService {
       // Preserve historical associations; only active parent records permit mutations.
       if(existing.companyId){const [parent]=await tx.select({id:crmCompanies.id}).from(crmCompanies).where(and(eq(crmCompanies.id,existing.companyId),eq(crmCompanies.organizationId,ctx.organizationId),isNull(crmCompanies.archivedAt))).for("update");if(!parent)throw new NotFoundException("Active company not found");}
       if(existing.contactId){const [parent]=await tx.select({id:crmContacts.id}).from(crmContacts).where(and(eq(crmContacts.id,existing.contactId),eq(crmContacts.organizationId,ctx.organizationId),isNull(crmContacts.archivedAt))).for("update");if(!parent)throw new NotFoundException("Active contact not found");}
-      const [row]=await tx.update(crmActivities).set({...typeof change==="boolean"?{archivedAt:change?new Date():null}:this.values(change),updatedAt:new Date()}).where(and(scope,typeof change==="boolean"?undefined:isNull(crmActivities.archivedAt))).returning();
+      const [row]=await tx.update(crmActivities).set({...(typeof change==="boolean"?{archivedAt:change?new Date():null}:this.values(change)),updatedAt:new Date()}).where(and(scope,typeof change==="boolean"?undefined:isNull(crmActivities.archivedAt))).returning();
       if(!row)throw new NotFoundException("Active activity not found");return row;
     });
   }
