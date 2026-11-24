@@ -23,6 +23,7 @@ export class ContactsService {
   async list(ctx: RequestContext, query: ListContactsQueryDto) {
     const conditions = [eq(crmContacts.organizationId, ctx.organizationId)];
     if(query.status==="archived") conditions.push(isNotNull(crmContacts.archivedAt)); else if(query.status!=="all") conditions.push(isNull(crmContacts.archivedAt));
+    if(query.lifecycleStage) conditions.push(eq(crmContacts.lifecycleStage,query.lifecycleStage));
     if (query.search?.trim()) { const term = `%${query.search.trim().replace(/[\\%_]/g, "\\$&")}%`; conditions.push(or(ilike(crmContacts.displayName, term), ilike(crmContacts.phone, term), ilike(crmContacts.email, term))!); }
     if (query.tag?.trim()) conditions.push(sql`${query.tag.trim()} = ANY(${crmContacts.tags})`);
     const page = query.page ?? 1, limit = query.limit ?? 20;
