@@ -8,8 +8,9 @@ import { toast } from "sonner";
 import { Button } from "@workspace/ui/components/button";
 import { Input } from "@workspace/ui/components/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@workspace/ui/components/dialog";
-import { crmCompaniesApi, type CompanyDetail } from "@/lib/crm-companies-api";
+import { crmCompaniesApi, type CompanyDetail, type CompanyContact, lifecycleLabels } from "@/lib/crm-companies-api";
 import { crmContactsApi, type CrmContact } from "@/lib/crm-contacts-api";
+import { RelationshipForm } from "../relationship-form";
 import { CompanyForm } from "../company-form";
 
 export default function CompanyDetailPage() {
@@ -18,6 +19,7 @@ export default function CompanyDetailPage() {
   const [error, setError] = useState(false);
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [relation,setRelation]=useState<CompanyContact|null>(null);
   const [search, setSearch] = useState("");
   const [contacts, setContacts] = useState<CrmContact[]>([]);
   const [contactError, setContactError] = useState(false);
@@ -63,7 +65,7 @@ export default function CompanyDetailPage() {
       <aside className="overflow-hidden rounded-xl border bg-card">
         <h2 className="border-b px-5 py-4 text-sm font-semibold">Thông tin doanh nghiệp</h2>
         <dl className="space-y-5 p-5">
-          {([{label:"Mã số thuế",value:company.taxCode,Icon:FileText},{label:"Website",value:company.website,Icon:Globe},{label:"Email",value:company.email,Icon:Mail},{label:"Điện thoại",value:company.phone,Icon:Phone},{label:"Địa chỉ",value:company.address,Icon:MapPin}] as const).map(({label,value,Icon})=><div key={label} className="flex items-start gap-3"><Icon className="mt-0.5 size-4 shrink-0 text-muted-foreground"/><div className="min-w-0"><dt className="text-xs text-muted-foreground">{label}</dt><dd className="mt-1 break-words text-sm">{value||"Chưa cập nhật"}</dd></div></div>)}
+          {([{label:"Ngành nghề",value:company.industry,Icon:Building2},{label:"Quy mô",value:company.employeeRange,Icon:Users},{label:"Nguồn",value:company.source,Icon:FileText},{label:"Vòng đời",value:company.lifecycleStage?lifecycleLabels[company.lifecycleStage]:null,Icon:FileText},{label:"Tags",value:company.tags?.join(", "),Icon:FileText},{label:"Mã số thuế",value:company.taxCode,Icon:FileText},{label:"Website",value:company.website,Icon:Globe},{label:"Email",value:company.email,Icon:Mail},{label:"Điện thoại",value:company.phone,Icon:Phone},{label:"Địa chỉ",value:company.address,Icon:MapPin}] as const).map(({label,value,Icon})=><div key={label} className="flex items-start gap-3"><Icon className="mt-0.5 size-4 shrink-0 text-muted-foreground"/><div className="min-w-0"><dt className="text-xs text-muted-foreground">{label}</dt><dd className="mt-1 break-words text-sm">{value||"Chưa cập nhật"}</dd></div></div>)}
         </dl><div className="border-t px-5 py-4 text-xs text-muted-foreground">Cập nhật: {new Date(company.updatedAt).toLocaleString("vi-VN")}</div>
       </aside>
       <section className="min-w-0 overflow-hidden rounded-xl border bg-card">
@@ -74,13 +76,14 @@ export default function CompanyDetailPage() {
         </div>:<div className="space-y-5 p-5">
           <div className="flex flex-wrap items-center justify-between gap-2"><div><h2 className="font-semibold">Người liên hệ</h2><p className="text-sm text-muted-foreground">Những cá nhân có liên quan đến doanh nghiệp.</p></div><Link className="text-sm underline" href="/contacts">Quản lý danh bạ</Link></div>
           {company.contacts.length===0&&<p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">Chưa có người liên hệ.</p>}
-          {company.contacts.map(contact=><div key={contact.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3"><div className="flex min-w-0 items-center gap-3"><span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-muted"><UserRound className="size-4"/></span><div className="min-w-0"><Link className="font-medium hover:underline" href={"/contacts/"+encodeURIComponent(contact.id)}>{contact.displayName||"Chưa đặt tên"}</Link><p className="break-words text-xs text-muted-foreground">{[contact.email,contact.phone].filter(Boolean).join(" · ")||"Chưa có thông tin liên hệ"}</p></div></div>{!archived&&<Button disabled={busy} variant="outline" size="sm" onClick={()=>void mutate(()=>crmCompaniesApi.unlink(id,contact.id))}>Gỡ liên kết</Button>}</div>)}
+          {company.contacts.map(contact=><div key={contact.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3"><div className="flex min-w-0 items-center gap-3"><span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-muted"><UserRound className="size-4"/></span><div className="min-w-0"><Link className="font-medium hover:underline" href={"/contacts/"+encodeURIComponent(contact.id)}>{contact.displayName||"Chưa đặt tên"}</Link><p className="text-xs text-muted-foreground">{[contact.jobTitle,contact.department,contact.relationshipRole,contact.isPrimary?"Liên hệ chính":null,contact.archivedAt?"Đã lưu trữ":null].filter(Boolean).join(" · ")}</p><p className="break-words text-xs text-muted-foreground">{[contact.email,contact.phone].filter(Boolean).join(" · ")||"Chưa có thông tin liên hệ"}</p></div></div>{!archived&&<div className="flex gap-2"><Button disabled={busy} variant="outline" size="sm" onClick={()=>setRelation(contact)}>Vai trò</Button><Button disabled={busy} variant="outline" size="sm" onClick={()=>void mutate(()=>crmCompaniesApi.unlink(id,contact.id))}>Gỡ liên kết</Button></div>}</div>)}
           {!archived&&<div className="space-y-3 rounded-lg border bg-muted/20 p-4"><h3 className="text-sm font-medium">Liên kết người liên hệ có sẵn</h3><div className="relative"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"/><Input className="pl-9" placeholder="Tìm theo tên, email hoặc SĐT..." value={search} onChange={e=>setSearch(e.target.value)}/></div>
           {contactLoading&&<p className="text-sm text-muted-foreground">Đang tìm...</p>}{contactError&&<p className="text-sm">Không thể tìm người liên hệ.</p>}{!contactLoading&&!contactError&&search.trim()&&available.length===0&&<p className="text-sm text-muted-foreground">Không tìm thấy người liên hệ chưa được liên kết.</p>}
           {available.map(contact=><div key={contact.id} className="flex items-center justify-between gap-2"><div className="min-w-0 text-sm"><p>{contact.displayName||contact.email||contact.phone||"Chưa đặt tên"}</p><p className="break-words text-xs text-muted-foreground">{[contact.email,contact.phone].filter(Boolean).join(" · ")}</p></div><Button disabled={busy} size="sm" variant="outline" onClick={()=>void mutate(()=>crmCompaniesApi.link(id,contact.id))}>Liên kết</Button></div>)}</div>}
         </div>}
       </section>
     </div>
+    <Dialog open={!!relation} onOpenChange={open=>{if(!open&&!busy)setRelation(null)}}><DialogContent><DialogHeader><DialogTitle>Vai trò người liên hệ</DialogTitle><DialogDescription>Thông tin riêng tại doanh nghiệp này.</DialogDescription></DialogHeader>{relation&&<RelationshipForm contact={relation} busy={busy} onSave={async input=>{await mutate(async()=>{await crmCompaniesApi.updateContact(id,relation.id,input);setRelation(null)})}}/>}</DialogContent></Dialog>
     <Dialog open={editing} onOpenChange={(next) => { if (!busy) setEditing(next); }}><DialogContent className="sm:max-w-2xl"><DialogHeader><DialogTitle>Chỉnh sửa doanh nghiệp</DialogTitle><DialogDescription>Cập nhật hồ sơ khách hàng.</DialogDescription></DialogHeader>{editing && <CompanyForm company={company} busy={busy} onSave={(input) => mutate(() => crmCompaniesApi.update(id, input), true)} />}</DialogContent></Dialog>
   </main>;
 }
