@@ -206,3 +206,28 @@ export const crmCompanyContacts = pgTable("crm_company_contacts", {
 ]);
 
 export type CrmCompany = typeof crmCompanies.$inferSelect;
+
+export const CRM_ACTIVITY_TYPES = ["note","call","meeting","email","message"] as const;
+export const crmActivities = pgTable("crm_activities", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id").notNull().references(()=>organization.id,{onDelete:"cascade"}),
+  companyId: text("company_id"),
+  contactId: text("contact_id"),
+  type: text("type",{enum:CRM_ACTIVITY_TYPES}).notNull(),
+  subject: text("subject").notNull(),
+  body: text("body"),
+  outcome: text("outcome"),
+  occurredAt: timestamp("occurred_at",{withTimezone:true}).notNull(),
+  createdByUserId: text("created_by_user_id").references(()=>user.id,{onDelete:"set null"}),
+  createdAt: timestamp("created_at",{withTimezone:true}).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at",{withTimezone:true}).notNull().defaultNow(),
+  archivedAt: timestamp("archived_at",{withTimezone:true}),
+}, table=>[
+  check("crm_activities_target_check",sql`${table.companyId} IS NOT NULL OR ${table.contactId} IS NOT NULL`),
+  check("crm_activities_type_check",sql`${table.type} IN ('note','call','meeting','email','message')`),
+  foreignKey({name:"crm_activities_company_org_fk",columns:[table.companyId,table.organizationId],foreignColumns:[crmCompanies.id,crmCompanies.organizationId]}),
+  foreignKey({name:"crm_activities_contact_org_fk",columns:[table.contactId,table.organizationId],foreignColumns:[crmContacts.id,crmContacts.organizationId]}),
+  index("crm_activities_company_idx").on(table.organizationId,table.companyId,table.occurredAt),
+  index("crm_activities_contact_idx").on(table.organizationId,table.contactId,table.occurredAt),
+]);
+export type CrmActivity = typeof crmActivities.$inferSelect;
