@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { ActivityTimeline } from "../../crm-activity-timeline";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { Building2, Users, Pencil, Archive, RotateCcw, ArrowLeft, Search, UserRound, Mail, Phone, Globe, MapPin, FileText } from "lucide-react";
@@ -24,7 +25,7 @@ export default function CompanyDetailPage() {
   const [contacts, setContacts] = useState<CrmContact[]>([]);
   const [contactError, setContactError] = useState(false);
   const [contactLoading, setContactLoading] = useState(false);
-  const [tab, setTab] = useState<"overview" | "contacts">("overview");
+  const [tab, setTab] = useState<"overview" | "contacts" | "activities">("overview");
   const load = useCallback(async () => {
     setError(false);
     try { setCompany(await crmCompaniesApi.get(id)); } catch { setError(true); }
@@ -69,8 +70,8 @@ export default function CompanyDetailPage() {
         </dl><div className="border-t px-5 py-4 text-xs text-muted-foreground">Cập nhật: {new Date(company.updatedAt).toLocaleString("vi-VN")}</div>
       </aside>
       <section className="min-w-0 overflow-hidden rounded-xl border bg-card">
-        <nav className="flex gap-6 border-b px-5" aria-label="Hồ sơ doanh nghiệp">{([{key:"overview",label:"Tổng quan"},{key:"contacts",label:"Người liên hệ ("+company.contacts.length+")"}] as const).map(({key,label})=><button key={key} type="button" aria-pressed={tab===key} onClick={()=>setTab(key)} className={"border-b-2 py-4 text-sm font-medium "+(tab===key?"border-foreground":"border-transparent text-muted-foreground hover:text-foreground")}>{label}</button>)}</nav>
-        {tab==="overview"?<div className="space-y-5 p-5">
+        <nav className="flex gap-6 border-b px-5" aria-label="Hồ sơ doanh nghiệp">{([{key:"overview",label:"Tổng quan"},{key:"contacts",label:"Người liên hệ ("+company.contacts.length+")"},{key:"activities",label:"Tương tác"}] as const).map(({key,label})=><button key={key} type="button" aria-pressed={tab===key} onClick={()=>setTab(key)} className={"border-b-2 py-4 text-sm font-medium "+(tab===key?"border-foreground":"border-transparent text-muted-foreground hover:text-foreground")}>{label}</button>)}</nav>
+        {tab==="activities"?<ActivityTimeline key={id} target="company" id={id} archived={archived} related={company.contacts.filter(c=>!c.archivedAt).map(c=>({id:c.id,name:c.displayName??"Chưa đặt tên"}))}/>:tab==="overview"?<div className="space-y-5 p-5">
           <div className="rounded-lg border p-4"><div className="flex items-center justify-between"><span className="text-sm text-muted-foreground">Người liên hệ</span><Users className="size-4 text-muted-foreground"/></div><p className="mt-2 text-2xl font-semibold">{company.contacts.length}</p><Button variant="link" className="mt-1 h-auto p-0" onClick={()=>setTab("contacts")}>Quản lý người liên hệ</Button></div>
           <div className="rounded-lg border p-4"><div className="flex items-center justify-between gap-2"><h2 className="text-sm font-semibold">Ghi chú hồ sơ</h2>{!archived&&<Button variant="ghost" size="sm" disabled={busy} onClick={()=>setEditing(true)}><Pencil className="size-4"/>Sửa</Button>}</div><p className="mt-3 whitespace-pre-wrap break-words text-sm text-muted-foreground">{company.notes||"Chưa có ghi chú. Bổ sung bối cảnh và nhu cầu của khách hàng."}</p></div>
         </div>:<div className="space-y-5 p-5">
