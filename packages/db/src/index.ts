@@ -235,3 +235,6 @@ export type {
   WebsiteProjectConfig,
 } from "./website-services-schema.js";
 export { assistantTaskLinks } from "./assistant-task-schema.js";
+
+export { crmCompanies, crmCompanyContacts } from "./crm-schema.js";
+export type { CrmCompany } from "./crm-schema.js";
