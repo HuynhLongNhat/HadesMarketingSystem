@@ -22,6 +22,8 @@ export class UpdateCompanyDto extends CompanyFieldsDto {
   @ValidateIf((_, value) => value !== undefined) @IsString() @Matches(/\S/) @MaxLength(200) name?: string;
 }
 export class ListCompaniesDto {
+  @IsOptional() @IsIn(["prospect","qualified","customer","former_customer"]) lifecycleStage?: "prospect"|"qualified"|"customer"|"former_customer";
+
   @IsOptional() @IsString() @MaxLength(200) search?: string;
   @IsOptional() @IsIn(["active", "archived", "all"]) status?: "active" | "archived" | "all";
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100000) page = 1;
