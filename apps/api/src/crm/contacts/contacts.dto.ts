@@ -1,15 +1,20 @@
 import { Type } from "class-transformer";
-import { IsArray, IsEmail, IsIn, IsInt, IsOptional, IsString, Max, MaxLength, Min } from "class-validator";
+import { IsArray, IsEmail, IsIn, IsInt, IsOptional, IsString, ValidateIf, Max, MaxLength, Min } from "class-validator";
 
 export class CreateContactDto {
+  @IsOptional() @IsString() @MaxLength(120) source?: string;
+  @IsOptional() @IsIn(["prospect","qualified","customer","former_customer",""]) lifecycleStage?: "prospect"|"qualified"|"customer"|"former_customer"|"";
+  @IsOptional() @IsString() @MaxLength(128) ownerMemberId?: string;
+
   @IsOptional() @IsString() @MaxLength(200) displayName?: string;
   @IsOptional() @IsString() @MaxLength(40) phone?: string;
-  @IsOptional() @IsEmail() @MaxLength(320) email?: string;
+  @ValidateIf((_,v)=>v!==undefined&&v!==null&&v!=="") @IsEmail() @MaxLength(320) email?: string;
   @IsOptional() @IsString() @MaxLength(2000) notes?: string;
   @IsOptional() @IsArray() @IsString({ each: true }) @MaxLength(30, { each: true }) tags?: string[];
 }
 export class UpdateContactDto extends CreateContactDto {}
 export class ListContactsQueryDto {
+  @IsOptional() @IsIn(["active","archived","all"]) status?: "active"|"archived"|"all";
   @IsOptional() @IsString() @MaxLength(200) search?: string;
   @IsOptional() @IsString() @MaxLength(30) tag?: string;
   @IsOptional() @IsIn(["updated", "created", "name"]) sort?: "updated" | "created" | "name";
