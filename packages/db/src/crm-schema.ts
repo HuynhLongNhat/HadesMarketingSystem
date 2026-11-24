@@ -1,4 +1,5 @@
 import {
+  boolean,
   foreignKey,
   index,
   jsonb,
@@ -10,6 +11,7 @@ import {
 
 import { conversations, organization, user } from "./schema.js";
 
+export const CRM_LIFECYCLE_STAGES = ["prospect", "qualified", "customer", "former_customer"] as const;
 export const CRM_CHANNEL_TYPES = [
   "widget",
   "zalo_oa",
@@ -35,6 +37,10 @@ export const crmContacts = pgTable(
     organizationId: text("organization_id")
       .notNull()
       .references(() => organization.id, { onDelete: "cascade" }),
+    source: text("source"),
+    lifecycleStage: text("lifecycle_stage", { enum: CRM_LIFECYCLE_STAGES }),
+    ownerMemberId: text("owner_member_id"),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
     displayName: text("display_name"),
     phone: text("phone"),
     email: text("email"),
@@ -158,6 +164,12 @@ export const crmCompanies = pgTable("crm_companies", {
   id: text("id").primaryKey(),
   organizationId: text("organization_id").notNull().references(() => organization.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
+    source: text("source"),
+    lifecycleStage: text("lifecycle_stage", { enum: CRM_LIFECYCLE_STAGES }),
+    ownerMemberId: text("owner_member_id"),
+  industry: text("industry"),
+  employeeRange: text("employee_range"),
+  tags: text("tags").array().notNull().default([]),
   taxCode: text("tax_code"),
   website: text("website"),
   phone: text("phone"),
@@ -175,6 +187,10 @@ export const crmCompanies = pgTable("crm_companies", {
 
 export const crmCompanyContacts = pgTable("crm_company_contacts", {
   companyId: text("company_id").notNull(),
+  jobTitle: text("job_title"),
+  department: text("department"),
+  relationshipRole: text("relationship_role"),
+  isPrimary: boolean("is_primary").notNull().default(false),
   contactId: text("contact_id").notNull(),
   organizationId: text("organization_id").notNull(),
 }, (table) => [
