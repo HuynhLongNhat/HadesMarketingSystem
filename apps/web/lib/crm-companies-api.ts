@@ -1,6 +1,11 @@
 import { apiFetch } from "./api-client";
 
-export type CompanyInput = {
+export type LifecycleStage = "prospect" | "qualified" | "customer" | "former_customer";
+export type ProfileInput = { source?: string; lifecycleStage?: LifecycleStage | ""; ownerMemberId?: string };
+export const lifecycleLabels: Record<LifecycleStage, string> = { prospect:"Tiềm năng", qualified:"Đủ điều kiện", customer:"Khách hàng", former_customer:"Khách hàng cũ" };
+export type ProfileFields = {source:string|null; lifecycleStage:LifecycleStage|null; ownerMemberId:string|null};
+export type CompanyInput = ProfileInput & {
+  industry?: string; employeeRange?: string; tags?: string[];
   name: string;
   taxCode?: string;
   website?: string;
@@ -9,7 +14,8 @@ export type CompanyInput = {
   address?: string;
   notes?: string;
 };
-export type CrmCompany = {
+export type CrmCompany = ProfileFields & {
+  industry:string|null; employeeRange:string|null; tags:string[];
   id: string;
   name: string;
   taxCode: string | null;
@@ -21,7 +27,8 @@ export type CrmCompany = {
   archivedAt: string | null;
   updatedAt: string;
 };
-export type CompanyContact = { id: string; displayName: string | null; email: string | null; phone: string | null };
+export type RelationshipInput = { jobTitle?:string; department?:string; relationshipRole?:string; isPrimary?:boolean };
+export type CompanyContact = { jobTitle:string|null; department:string|null; relationshipRole:string|null; isPrimary:boolean; archivedAt:string|null; id: string; displayName: string | null; email: string | null; phone: string | null };
 export type CompanyDetail = CrmCompany & { contacts: CompanyContact[] };
 const path = (id: string) => "/crm/companies/" + encodeURIComponent(id);
 
@@ -34,5 +41,6 @@ export const crmCompaniesApi = {
   archive: (id: string) => apiFetch<CrmCompany>(path(id) + "/archive", { method: "POST" }),
   restore: (id: string) => apiFetch<CrmCompany>(path(id) + "/restore", { method: "POST" }),
   link: (id: string, contactId: string) => apiFetch<{ success: boolean }>(path(id) + "/contacts", { method: "POST", body: JSON.stringify({ contactId }) }),
+  updateContact: (id:string, contactId:string, input:RelationshipInput) => apiFetch<unknown>(path(id)+"/contacts/"+encodeURIComponent(contactId),{method:"PATCH",body:JSON.stringify(input)}),
   unlink: (id: string, contactId: string) => apiFetch<{ success: boolean }>(path(id) + "/contacts/" + encodeURIComponent(contactId), { method: "DELETE" }),
 };
