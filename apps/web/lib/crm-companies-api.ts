@@ -33,8 +33,8 @@ export type CompanyDetail = CrmCompany & { contacts: CompanyContact[] };
 const path = (id: string) => "/crm/companies/" + encodeURIComponent(id);
 
 export const crmCompaniesApi = {
-  list: (search: string, page: number, status: "active" | "archived") =>
-    apiFetch<{ items: CrmCompany[]; total: number; page: number; limit: number }>("/crm/companies?" + new URLSearchParams({ search, page: String(page), limit: "20", status })),
+  list: (search: string, page: number, status: "active" | "archived", lifecycleStage?: LifecycleStage) =>
+    apiFetch<{ items: CrmCompany[]; total: number; page: number; limit: number }>("/crm/companies?" + new URLSearchParams({ search, page: String(page), limit: "20", status, ...(lifecycleStage?{lifecycleStage}:{}) })),
   create: (input: CompanyInput) => apiFetch<CrmCompany>("/crm/companies", { method: "POST", body: JSON.stringify(input) }),
   get: (id: string) => apiFetch<CompanyDetail>(path(id)),
   update: (id: string, input: CompanyInput) => apiFetch<CrmCompany>(path(id), { method: "PATCH", body: JSON.stringify(input) }),
