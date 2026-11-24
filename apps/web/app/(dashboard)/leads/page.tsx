@@ -1,15 +1,25 @@
-import { Target } from "lucide-react";
-
-import { CrmEmptyState } from "@/modules/dashboard/ui/components/crm-empty-state";
-
-export default function LeadsPage() {
-  return (
-    <CrmEmptyState
-      eyebrow="CRM Foundation"
-      title="Leads"
-      description="Lead là một nhu cầu bán hàng được tạo có chủ đích cho một Contact, không được tự sinh từ mọi tin nhắn của khách."
-      icon={Target}
-      details="API tạo và phân công Lead sẽ được bổ sung khi quy trình sales được xác nhận. Hiện chưa có dữ liệu hay thao tác giả trên trang này."
-    />
-  );
+"use client";
+import Link from "next/link";
+import {useRouter} from "next/navigation";
+import {useEffect,useState} from "react";
+import {Target,Plus,Search,Loader2,ArrowUpRight,RefreshCw} from "lucide-react";
+import {Button} from "@workspace/ui/components/button";
+import {Input} from "@workspace/ui/components/input";
+import {Dialog,DialogContent,DialogHeader,DialogTitle,DialogDescription} from "@workspace/ui/components/dialog";
+import {toast} from "sonner";
+import {crmLeadsApi,leadLabels,priorityLabels,budgetLabel,type Lead,type LeadInput,type LeadStatus,type Priority} from "@/lib/crm-leads-api";
+import {LeadForm} from "./lead-form";
+export default function LeadsPage(){
+ const router=useRouter();
+ const [items,setItems]=useState<Lead[]>([]),[total,setTotal]=useState(0),[page,setPage]=useState(1),[search,setSearch]=useState(""),[stage,setStage]=useState<LeadStatus|"">(""),[priority,setPriority]=useState<Priority|"">(""),[archive,setArchive]=useState<"active"|"archived">("active"),[sort,setSort]=useState("updated"),[revision,setRevision]=useState(0);
+ const [loading,setLoading]=useState(true),[error,setError]=useState(false),[open,setOpen]=useState(false),[busy,setBusy]=useState(false),[counts,setCounts]=useState<Record<string,number>>({});
+ useEffect(()=>{let alive=true;setLoading(true);setError(false);const timer=setTimeout(()=>{crmLeadsApi.list({page,search,status:stage,priority,archive,sort}).then(r=>{if(alive){setItems(r.items);setTotal(r.total)}}).catch(()=>{if(alive)setError(true)}).finally(()=>{if(alive)setLoading(false)})},250);return()=>{alive=false;clearTimeout(timer)}},[page,search,stage,priority,archive,sort,revision]);
+ useEffect(()=>{let alive=true;Promise.all(["","new","connected","qualified"].map(async status=>[status,(await crmLeadsApi.list({status,archive:"active"})).total] as const)).then(rows=>{if(alive)setCounts(Object.fromEntries(rows))}).catch(()=>{if(alive)setCounts({})});return()=>{alive=false}},[revision]);
+ async function save(v:LeadInput){setBusy(true);try{const lead=await crmLeadsApi.create(v);setOpen(false);toast.success("Đã tạo Lead");router.push("/leads/"+encodeURIComponent(lead.id))}catch(e){toast.error(e instanceof Error?e.message:"Không thể tạo Lead")}finally{setBusy(false)}}
+ const select="h-9 rounded-md border bg-background px-2 text-sm";
+ return <main className="mx-auto w-full max-w-[1600px] space-y-5 p-4 sm:p-8"><header className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-xs text-muted-foreground">CRM / Lead Inbox</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">Quản lý Lead</h1><p className="text-sm text-muted-foreground">Xác minh nhu cầu trước khi chuyển thành cơ hội bán hàng.</p></div><Button onClick={()=>setOpen(true)}><Plus className="size-4"/>Thêm Lead</Button></header>
+ <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">{(["","new","connected","qualified"] as const).map(k=><button key={k} type="button" onClick={()=>{setArchive("active");setStage(k);setPage(1)}} className="rounded-xl border p-4 text-left hover:bg-muted/30"><p className="text-sm text-muted-foreground">{k?leadLabels[k]:"Tổng Lead hoạt động"}</p><p className="mt-2 text-2xl font-semibold tabular-nums">{counts[k]??"—"}</p></button>)}</div>
+ <section className="overflow-hidden rounded-xl border bg-card"><div className="flex flex-wrap items-center gap-2 border-b p-4"><Button size="sm" variant={archive==="active"?"default":"outline"} onClick={()=>{setArchive("active");setPage(1)}}>Đang hoạt động</Button><Button size="sm" variant={archive==="archived"?"default":"outline"} onClick={()=>{setArchive("archived");setPage(1)}}>Đã lưu trữ</Button><div className="relative min-w-48 flex-1"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"/><Input className="pl-9" placeholder="Tìm Lead, doanh nghiệp, người liên hệ..." value={search} onChange={e=>{setSearch(e.target.value);setPage(1)}}/></div><select aria-label="Trạng thái" className={select} value={stage} onChange={e=>{setStage(e.target.value as LeadStatus|"");setPage(1)}}><option value="">Mọi trạng thái</option>{Object.entries(leadLabels).map(([k,l])=><option key={k} value={k}>{l}</option>)}</select><select aria-label="Ưu tiên" className={select} value={priority} onChange={e=>{setPriority(e.target.value as Priority|"");setPage(1)}}><option value="">Mọi ưu tiên</option>{Object.entries(priorityLabels).map(([k,l])=><option key={k} value={k}>{l}</option>)}</select><select aria-label="Sắp xếp" className={select} value={sort} onChange={e=>{setSort(e.target.value);setPage(1)}}><option value="updated">Cập nhật mới nhất</option><option value="created">Mới tạo</option><option value="title">Tên A–Z</option></select><Button variant="outline" size="icon" aria-label="Tải lại" onClick={()=>setRevision(n=>n+1)}><RefreshCw className="size-4"/></Button></div>
+ {loading?<div className="flex justify-center p-16"><Loader2 className="animate-spin"/></div>:error?<div className="p-10 text-center">Không thể tải Lead. <Button variant="outline" onClick={()=>setRevision(n=>n+1)}>Thử lại</Button></div>:<><div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead className="border-b bg-muted/30 text-xs text-muted-foreground"><tr>{["Lead / Khách hàng","Trạng thái","Ưu tiên","Ngân sách","Phụ trách","Cập nhật",""].map((t,i)=><th className="whitespace-nowrap px-4 py-3 font-medium" key={i}>{t}</th>)}</tr></thead><tbody>{items.map(l=><tr key={l.id} className="border-b last:border-0 hover:bg-muted/25"><td className="min-w-56 px-4 py-3"><Link className="font-medium hover:underline" href={"/leads/"+encodeURIComponent(l.id)}>{l.title}</Link><p className="text-xs text-muted-foreground">{[l.companyName,l.contactName].filter(Boolean).join(" · ")}</p></td><td className="px-4 py-3"><span className="whitespace-nowrap rounded-full border px-2 py-1 text-xs">{leadLabels[l.status]}</span></td><td className="px-4 py-3">{priorityLabels[l.priority]}</td><td className="whitespace-nowrap px-4 py-3">{budgetLabel(l)}</td><td className="px-4 py-3">{l.ownerName??"Chưa phân công"}</td><td className="whitespace-nowrap px-4 py-3 text-muted-foreground">{new Date(l.updatedAt).toLocaleDateString("vi-VN")}</td><td className="px-4 py-3"><Button variant="ghost" size="icon" asChild><Link href={"/leads/"+encodeURIComponent(l.id)} aria-label="Mở Lead"><ArrowUpRight className="size-4"/></Link></Button></td></tr>)}</tbody></table>{!items.length&&<div className="space-y-3 p-12 text-center text-muted-foreground"><Target className="mx-auto size-8"/><p>Không có Lead phù hợp.</p></div>}</div><footer className="flex items-center justify-between border-t p-4 text-sm text-muted-foreground"><span>{total} Lead · Trang {page}</span><div className="flex gap-2"><Button size="sm" variant="outline" disabled={page<=1} onClick={()=>setPage(n=>n-1)}>Trước</Button><Button size="sm" variant="outline" disabled={page*20>=total} onClick={()=>setPage(n=>n+1)}>Sau</Button></div></footer></>}</section>
+ <Dialog open={open} onOpenChange={v=>{if(!busy)setOpen(v)}}><DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl"><DialogHeader><DialogTitle>Thêm Lead</DialogTitle><DialogDescription>Ghi nhận nhu cầu cụ thể của khách hàng.</DialogDescription></DialogHeader>{open&&<LeadForm busy={busy} onSave={save}/>}</DialogContent></Dialog></main>
 }
