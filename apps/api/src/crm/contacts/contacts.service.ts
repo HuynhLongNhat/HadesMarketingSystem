@@ -1,12 +1,13 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
 import { and, asc, desc, eq, ilike, isNull, isNotNull, or, sql } from "drizzle-orm";
-import { db, conversations, crmChannelIdentities, crmContacts, crmConversationContacts, crmCompanyContacts, crmCompanies, member } from "@workspace/db/node";
+import { db, conversations, crmChannelIdentities, crmContacts, crmConversationContacts, crmCompanyContacts, crmCompanies, member, user } from "@workspace/db/node";
 import { randomUUID } from "node:crypto";
 import type { RequestContext } from "../../auth/request-context.js";
 import type { CreateContactDto, ListContactsQueryDto, UpdateContactDto } from "./contacts.dto.js";
 
 @Injectable()
 export class ContactsService {
+  async owners(ctx:RequestContext) { return db.select({id:member.id,name:user.name}).from(member).innerJoin(user,eq(member.userId,user.id)).where(eq(member.organizationId,ctx.organizationId)).orderBy(asc(user.name)); }
   private async validateOwner(ctx: RequestContext, ownerMemberId?: string) {
     if (!ownerMemberId?.trim()) return;
     const [owner] = await db.select({id:member.id}).from(member).where(and(eq(member.id, ownerMemberId.trim()), eq(member.organizationId, ctx.organizationId))).limit(1);
@@ -36,7 +37,7 @@ export class ContactsService {
   async remove(ctx:RequestContext,id:string) { await this.archive(ctx,id,true); return {success:true,id}; }
   async duplicates(ctx:RequestContext,email?:string,phone?:string,excludeId?:string) {
     const normalizedEmail=email?.trim().toLowerCase(), normalizedPhone=phone?.replace(/[^0-9]/g,"");
-    const terms=[]; if(normalizedEmail) terms.push(eq(sql<string>`lower(trim(${crmContacts.email}))`,normalizedEmail)); if(normalizedPhone) terms.push(eq(sql<string>`regexp_replace(${crmContacts.phone}, '[^0-9]', '', 'g')`,normalizedPhone));
+    const terms: ReturnType<typeof eq>[]=[]; if(normalizedEmail) terms.push(eq(sql<string>`lower(trim(${crmContacts.email}))`,normalizedEmail)); if(normalizedPhone) terms.push(eq(sql<string>`regexp_replace(${crmContacts.phone}, '[^0-9]', '', 'g')`,normalizedPhone));
     if(!terms.length) return [];
     return db.select({id:crmContacts.id,displayName:crmContacts.displayName,archivedAt:crmContacts.archivedAt}).from(crmContacts).where(and(eq(crmContacts.organizationId,ctx.organizationId),or(...terms),excludeId?sql`${crmContacts.id} <> ${excludeId}`:undefined)).limit(20);
   }
