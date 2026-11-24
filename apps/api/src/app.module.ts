@@ -20,6 +20,7 @@ import { OfficeModule } from "./office/office.module.js";
 import { NotificationsModule } from "./notifications/notifications.module.js";
 import { KnowledgeConnectionsModule } from "./knowledge-connections/knowledge-connections.module.js";
 import { WebsiteServicesModule } from "./website-services/website-services.module.js";
+import { CrmActivitiesModule } from "./crm/activities/activities.module.js";
 import { CrmCompaniesModule } from "./crm/companies/companies.module.js";
 import { CrmContactsModule } from "./crm/contacts/contacts.module.js";
 import { TasksModule } from "./tasks/tasks.module.js";
@@ -57,6 +58,7 @@ import { MarketIntelligenceModule } from "./market-intelligence/market-intellige
     WebsiteServicesModule,
     CrmContactsModule,
     CrmCompaniesModule,
+    CrmActivitiesModule,
     TasksModule,
     SearchProvidersModule,
     CeoPlanningModule,
