@@ -1,5 +1,6 @@
 import {
   boolean,
+  check,
   foreignKey,
   index,
   jsonb,
@@ -9,6 +10,7 @@ import {
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 
+import { sql } from "drizzle-orm";
 import { conversations, organization, user } from "./schema.js";
 
 export const CRM_LIFECYCLE_STAGES = ["prospect", "qualified", "customer", "former_customer"] as const;
@@ -52,6 +54,7 @@ export const crmContacts = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
+    check("crm_contacts_lifecycle_check", sql`${table.lifecycleStage} IN (\'prospect\',\'qualified\',\'customer\',\'former_customer\')`),
     index("crm_contacts_org_updated_idx").on(table.organizationId, table.updatedAt),
     index("crm_contacts_org_email_idx").on(table.organizationId, table.email),
     index("crm_contacts_org_phone_idx").on(table.organizationId, table.phone),
@@ -180,6 +183,7 @@ export const crmCompanies = pgTable("crm_companies", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
+  check("crm_companies_lifecycle_check", sql`${table.lifecycleStage} IN (\'prospect\',\'qualified\',\'customer\',\'former_customer\')`),
   uniqueIndex("crm_companies_id_org_uq").on(table.id, table.organizationId),
   uniqueIndex("crm_companies_org_tax_code_uq").on(table.organizationId, table.taxCode),
   index("crm_companies_org_archived_updated_idx").on(table.organizationId, table.archivedAt, table.updatedAt),
@@ -196,6 +200,7 @@ export const crmCompanyContacts = pgTable("crm_company_contacts", {
 }, (table) => [
   foreignKey({ name: "crm_company_contacts_company_org_fk", columns: [table.companyId, table.organizationId], foreignColumns: [crmCompanies.id, crmCompanies.organizationId] }).onDelete("cascade"),
   foreignKey({ name: "crm_company_contacts_contact_org_fk", columns: [table.contactId, table.organizationId], foreignColumns: [crmContacts.id, crmContacts.organizationId] }).onDelete("cascade"),
+  uniqueIndex("crm_company_contacts_primary_uq").on(table.organizationId,table.companyId).where(sql`${table.isPrimary}`),
   uniqueIndex("crm_company_contacts_org_company_contact_uq").on(table.organizationId, table.companyId, table.contactId),
   index("crm_company_contacts_org_contact_idx").on(table.organizationId, table.contactId),
 ]);
