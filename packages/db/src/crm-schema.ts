@@ -153,3 +153,35 @@ export type CrmChannelIdentity = typeof crmChannelIdentities.$inferSelect;
 export type NewCrmChannelIdentity = typeof crmChannelIdentities.$inferInsert;
 export type CrmLead = typeof crmLeads.$inferSelect;
 export type NewCrmLead = typeof crmLeads.$inferInsert;
+
+export const crmCompanies = pgTable("crm_companies", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id").notNull().references(() => organization.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  taxCode: text("tax_code"),
+  website: text("website"),
+  phone: text("phone"),
+  email: text("email"),
+  address: text("address"),
+  notes: text("notes"),
+  archivedAt: timestamp("archived_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("crm_companies_id_org_uq").on(table.id, table.organizationId),
+  uniqueIndex("crm_companies_org_tax_code_uq").on(table.organizationId, table.taxCode),
+  index("crm_companies_org_archived_updated_idx").on(table.organizationId, table.archivedAt, table.updatedAt),
+]);
+
+export const crmCompanyContacts = pgTable("crm_company_contacts", {
+  companyId: text("company_id").notNull(),
+  contactId: text("contact_id").notNull(),
+  organizationId: text("organization_id").notNull(),
+}, (table) => [
+  foreignKey({ name: "crm_company_contacts_company_org_fk", columns: [table.companyId, table.organizationId], foreignColumns: [crmCompanies.id, crmCompanies.organizationId] }).onDelete("cascade"),
+  foreignKey({ name: "crm_company_contacts_contact_org_fk", columns: [table.contactId, table.organizationId], foreignColumns: [crmContacts.id, crmContacts.organizationId] }).onDelete("cascade"),
+  uniqueIndex("crm_company_contacts_org_company_contact_uq").on(table.organizationId, table.companyId, table.contactId),
+  index("crm_company_contacts_org_contact_idx").on(table.organizationId, table.contactId),
+]);
+
+export type CrmCompany = typeof crmCompanies.$inferSelect;
