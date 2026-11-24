@@ -45,6 +45,7 @@ export class CompaniesService {
     const conditions = [eq(crmCompanies.organizationId, ctx.organizationId)];
     if (query.status === "archived") conditions.push(isNotNull(crmCompanies.archivedAt));
     else if (query.status !== "all") conditions.push(isNull(crmCompanies.archivedAt));
+    if(query.lifecycleStage) conditions.push(eq(crmCompanies.lifecycleStage,query.lifecycleStage));
     if (query.search?.trim()) {
       const term = "%" + query.search.trim().replace(/[\\%_]/g, "\\$&") + "%";
       conditions.push(or(ilike(crmCompanies.name, term), ilike(crmCompanies.taxCode, term), ilike(crmCompanies.email, term), ilike(crmCompanies.phone, term))!);
