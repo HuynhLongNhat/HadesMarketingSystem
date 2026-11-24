@@ -14,6 +14,8 @@ export class CreateContactDto {
 }
 export class UpdateContactDto extends CreateContactDto {}
 export class ListContactsQueryDto {
+  @IsOptional() @IsIn(["prospect","qualified","customer","former_customer"]) lifecycleStage?: "prospect"|"qualified"|"customer"|"former_customer";
+
   @IsOptional() @IsIn(["active","archived","all"]) status?: "active"|"archived"|"all";
   @IsOptional() @IsString() @MaxLength(200) search?: string;
   @IsOptional() @IsString() @MaxLength(30) tag?: string;
