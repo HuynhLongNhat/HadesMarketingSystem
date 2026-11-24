@@ -149,6 +149,19 @@ try {
   );
   record("TEST 07 — lead owner membership validation", "NOT IMPLEMENTED", "database FK accepts an existing user who is not an organization member; validate membership in future CRM service before insert/update");
 
+  const companyA = "company-a-" + suffix;
+  const companyB = "company-b-" + suffix;
+  await client.query("insert into crm_companies (id, organization_id, name, tax_code) values ($1,$2,'Company A',$5),($3,$4,'Company B',$5)", [companyA, ids.organizationA, companyB, ids.organizationB, suffix]);
+  await expectConstraint("Company tax code unique within organization", () => client.query("insert into crm_companies (id, organization_id, name, tax_code) values ($1,$2,'Duplicate',$3)", ["duplicate-" + suffix, ids.organizationA, suffix]));
+  await expectConstraint("Company cannot link another organization's contact", () => client.query("insert into crm_company_contacts (company_id,contact_id,organization_id) values ($1,$2,$3)", [companyA, ids.contactB, ids.organizationA]));
+  await expectConstraint("Contact cannot link another organization's company", () => client.query("insert into crm_company_contacts (company_id,contact_id,organization_id) values ($1,$2,$3)", [companyB, secondContactId, ids.organizationA]));
+  await client.query("insert into crm_company_contacts (company_id,contact_id,organization_id) values ($1,$2,$3)", [companyA, secondContactId, ids.organizationA]);
+  await expectConstraint("Duplicate company contact link rejected", () => client.query("insert into crm_company_contacts (company_id,contact_id,organization_id) values ($1,$2,$3)", [companyA, secondContactId, ids.organizationA]));
+  await client.query("update crm_companies set archived_at=now() where id=$1", [companyA]);
+  const retained = await client.query("select count(*) as count from crm_company_contacts where company_id=$1 and organization_id=$2", [companyA, ids.organizationA]);
+  assert.equal(retained.rows[0].count, "1");
+  record("Archiving company retains contact link", "PASS", "link preserved");
+
   await client.query("ROLLBACK");
   console.table(results);
   console.log(`PASS=${results.filter((item) => item.status === "PASS").length} NOT_IMPLEMENTED=${results.filter((item) => item.status === "NOT IMPLEMENTED").length}`);
