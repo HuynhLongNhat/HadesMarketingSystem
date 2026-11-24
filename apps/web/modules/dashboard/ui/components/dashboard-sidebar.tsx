@@ -86,6 +86,7 @@ const navigation: NavigationGroup[] = [
       { id: "integrations", label: { vi: "Kênh kết nối", en: "Connected channels" }, icon: Plug, href: "/integrations" },
       { id: "support-agent", label: { vi: "AI Support / CSKH", en: "AI Support" }, icon: Headset, href: "/customization?section=ai-support-agent" },
       { id: "conversations", label: { vi: "Hội thoại", en: "Conversations" }, icon: Inbox, href: "/conversations" },
+      { id: "companies", label: { vi: "Doanh nghiệp khách hàng", en: "Companies" }, icon: Building2, href: "/companies" },
       { id: "contacts", label: { vi: "Khách hàng", en: "Contacts" }, icon: Users, href: "/contacts" },
       { id: "leads", label: { vi: "Leads", en: "Leads" }, icon: Target, href: "/leads" },
       { id: "pipeline", label: { vi: "Pipeline", en: "Pipeline" }, icon: Workflow, href: "/pipeline" },
