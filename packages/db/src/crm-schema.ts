@@ -1,5 +1,7 @@
 import {
   boolean,
+  date,
+  numeric,
   check,
   foreignKey,
   index,
@@ -24,6 +26,8 @@ export type CrmChannelType = (typeof CRM_CHANNEL_TYPES)[number];
 
 export const CRM_LEAD_STATUSES = [
   "new",
+  "attempting",
+  "connected",
   "qualified",
   "disqualified",
   "converted",
@@ -128,34 +132,6 @@ export const crmConversationContacts = pgTable(
 );
 
 /** A sales need is explicit: no lead is auto-created from an inbound message. */
-export const crmLeads = pgTable(
-  "crm_leads",
-  {
-    id: text("id").primaryKey(),
-    organizationId: text("organization_id")
-      .notNull()
-      .references(() => organization.id, { onDelete: "cascade" }),
-    contactId: text("contact_id").notNull(),
-    sourceChannel: text("source_channel", { enum: CRM_CHANNEL_TYPES }),
-    status: text("status", { enum: CRM_LEAD_STATUSES }).notNull().default("new"),
-    ownerUserId: text("owner_user_id").references(() => user.id, { onDelete: "set null" }),
-    notes: text("notes"),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (table) => [
-    foreignKey({
-      name: "crm_leads_contact_org_fk",
-      columns: [table.contactId, table.organizationId],
-      foreignColumns: [crmContacts.id, crmContacts.organizationId],
-    }).onDelete("cascade"),
-    index("crm_leads_org_status_updated_idx").on(table.organizationId, table.status, table.updatedAt),
-    index("crm_leads_org_contact_idx").on(table.organizationId, table.contactId),
-    index("crm_leads_org_owner_idx").on(table.organizationId, table.ownerUserId),
-    uniqueIndex("crm_leads_id_org_uq").on(table.id, table.organizationId),
-  ],
-);
-
 export type CrmContact = typeof crmContacts.$inferSelect;
 export type NewCrmContact = typeof crmContacts.$inferInsert;
 export type CrmChannelIdentity = typeof crmChannelIdentities.$inferSelect;
@@ -207,12 +183,57 @@ export const crmCompanyContacts = pgTable("crm_company_contacts", {
 
 export type CrmCompany = typeof crmCompanies.$inferSelect;
 
+export const crmLeads = pgTable(
+  "crm_leads",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    contactId: text("contact_id"),
+    companyId: text("company_id"),
+    title: text("title").notNull().default("Lead chưa đặt tên"),
+    description: text("description"),
+    budgetMin: numeric("budget_min",{precision:18,scale:2}),
+    budgetMax: numeric("budget_max",{precision:18,scale:2}),
+    currency: text("currency").notNull().default("VND"),
+    expectedStartDate: date("expected_start_date"),
+    priority: text("priority",{enum:["low","medium","high"]}).notNull().default("medium"),
+    source: text("source"),
+    ownerMemberId: text("owner_member_id"),
+    disqualifiedReason: text("disqualified_reason"),
+    archivedAt: timestamp("archived_at",{withTimezone:true}),
+    sourceChannel: text("source_channel", { enum: CRM_CHANNEL_TYPES }),
+    status: text("status", { enum: CRM_LEAD_STATUSES }).notNull().default("new"),
+    ownerUserId: text("owner_user_id").references(() => user.id, { onDelete: "set null" }),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    foreignKey({
+      name: "crm_leads_contact_org_fk",
+      columns: [table.contactId, table.organizationId],
+      foreignColumns: [crmContacts.id, crmContacts.organizationId],
+    }).onDelete("cascade"),
+    foreignKey({name:"crm_leads_company_org_fk",columns:[table.companyId,table.organizationId],foreignColumns:[crmCompanies.id,crmCompanies.organizationId]}),
+    check("crm_leads_target_check",sql`${table.contactId} IS NOT NULL OR ${table.companyId} IS NOT NULL`),
+    check("crm_leads_budget_check",sql`(${table.budgetMin} IS NULL OR ${table.budgetMin} >= 0) AND (${table.budgetMax} IS NULL OR ${table.budgetMax} >= 0) AND (${table.budgetMin} IS NULL OR ${table.budgetMax} IS NULL OR ${table.budgetMin} <= ${table.budgetMax})`),
+    index("crm_leads_company_idx").on(table.organizationId,table.companyId),
+    index("crm_leads_org_status_updated_idx").on(table.organizationId, table.status, table.updatedAt),
+    index("crm_leads_org_contact_idx").on(table.organizationId, table.contactId),
+    index("crm_leads_org_owner_idx").on(table.organizationId, table.ownerUserId),
+    uniqueIndex("crm_leads_id_org_uq").on(table.id, table.organizationId),
+  ],
+);
+
 export const CRM_ACTIVITY_TYPES = ["note","call","meeting","email","message"] as const;
 export const crmActivities = pgTable("crm_activities", {
   id: text("id").primaryKey(),
   organizationId: text("organization_id").notNull().references(()=>organization.id,{onDelete:"cascade"}),
   companyId: text("company_id"),
   contactId: text("contact_id"),
+  leadId: text("lead_id"),
   type: text("type",{enum:CRM_ACTIVITY_TYPES}).notNull(),
   subject: text("subject").notNull(),
   body: text("body"),
@@ -227,6 +248,8 @@ export const crmActivities = pgTable("crm_activities", {
   check("crm_activities_type_check",sql`${table.type} IN ('note','call','meeting','email','message')`),
   foreignKey({name:"crm_activities_company_org_fk",columns:[table.companyId,table.organizationId],foreignColumns:[crmCompanies.id,crmCompanies.organizationId]}),
   foreignKey({name:"crm_activities_contact_org_fk",columns:[table.contactId,table.organizationId],foreignColumns:[crmContacts.id,crmContacts.organizationId]}),
+  foreignKey({name:"crm_activities_lead_org_fk",columns:[table.leadId,table.organizationId],foreignColumns:[crmLeads.id,crmLeads.organizationId]}),
+  index("crm_activities_lead_idx").on(table.organizationId,table.leadId,table.occurredAt),
   index("crm_activities_company_idx").on(table.organizationId,table.companyId,table.occurredAt),
   index("crm_activities_contact_idx").on(table.organizationId,table.contactId,table.occurredAt),
 ]);
