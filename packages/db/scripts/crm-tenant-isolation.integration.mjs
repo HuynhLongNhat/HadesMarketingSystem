@@ -162,6 +162,16 @@ try {
   assert.equal(retained.rows[0].count, "1");
   record("Archiving company retains contact link", "PASS", "link preserved");
 
+  await expectConstraint("Company lifecycle rejects invalid stage", () => client.query("update crm_companies set lifecycle_stage='invalid' where id=$1", [companyA]));
+  const extraContact = "extra-contact-" + suffix;
+  await client.query("insert into crm_contacts (id,organization_id,display_name) values ($1,$2,'Extra contact')", [extraContact,ids.organizationA]);
+  await client.query("insert into crm_company_contacts (company_id,contact_id,organization_id,is_primary) values ($1,$2,$3,true)", [companyA,extraContact,ids.organizationA]);
+  await expectConstraint("Only one primary contact per company", () => client.query("update crm_company_contacts set is_primary=true where company_id=$1 and contact_id=$2", [companyA,secondContactId]));
+  await client.query("update crm_contacts set archived_at=now() where id=$1", [extraContact]);
+  const archivedLink = await client.query("select count(*) as count from crm_company_contacts where company_id=$1 and contact_id=$2", [companyA,extraContact]);
+  assert.equal(archivedLink.rows[0].count,"1");
+  record("Archived contact keeps company relationship","PASS","link preserved");
+
   await client.query("ROLLBACK");
   console.table(results);
   console.log(`PASS=${results.filter((item) => item.status === "PASS").length} NOT_IMPLEMENTED=${results.filter((item) => item.status === "NOT IMPLEMENTED").length}`);
